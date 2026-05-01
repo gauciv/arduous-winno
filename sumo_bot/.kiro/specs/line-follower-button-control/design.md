@@ -8,7 +8,7 @@ This design reworks the sumo bot firmware (`sumo_bot.ino`) to operate exclusivel
 2. Adding a push button on D10 (INPUT_PULLUP) with a state machine governing calibration and start/stop
 3. Updating TB6612FNG motor driver pin assignments to the new wiring
 4. Splitting the single 6-sensor QTR array into two separate `QTRSensors` objects (Left and Right boards) with individual emitter pins
-5. Making calibration duration a configurable constant (default 15 seconds)
+5. Making calibration duration a configurable constant (default 10 seconds)
 6. Adding serial feedback at every state transition
 
 All changes are confined to `sumo_bot.ino`. No new files or libraries are introduced beyond the existing `QTRSensors` dependency.
@@ -235,7 +235,7 @@ void handleButtonStateMachine() {
 ### 4. Non-Blocking Calibration Sweep
 
 ```cpp
-const unsigned long CALIBRATION_DURATION_MS = 15000;  // Configurable, default 15s
+const unsigned long CALIBRATION_DURATION_MS = 10000;  // Configurable, default 10s
 
 void runCalibrationSweep() {
   unsigned long elapsed = millis() - calibrationStart;
@@ -344,7 +344,7 @@ void runLineFollow() {
 
 | Parameter | Type | Default | Location |
 |-----------|------|---------|----------|
-| CALIBRATION_DURATION_MS | unsigned long | 15000 | Tuning parameters section |
+| CALIBRATION_DURATION_MS | unsigned long | 10000 | Tuning parameters section |
 | DEBOUNCE_MS | unsigned long | 200 | Button constants section |
 | LF_BUTTON_PIN | uint8_t | 10 | Pin definitions section |
 

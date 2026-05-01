@@ -9,7 +9,7 @@ Rework the sumo bot's line follower mode to operate as the default mode with a d
 - **Bot**: The Arduino Nano-based sumo bot running the firmware in `sumo_bot.ino`
 - **Line_Follower_Button**: The push button connected to digital pin D10 that controls line follower start, stop, and calibration
 - **Calibration**: The QTR sensor calibration process where sensors sweep over black and white surfaces to learn min/max reflectance values
-- **Calibration_Duration**: A configurable variable (default 15 seconds) controlling how long the calibration sweep runs
+- **Calibration_Duration**: A configurable variable (default 10 seconds) controlling how long the calibration sweep runs
 - **Left_QTR**: The left QTR-MD-03RC sensor board with sensor pins on A3, A4, A5 and odd control/emitter pin on D12
 - **Right_QTR**: The right QTR-MD-03RC sensor board with sensor pins on A0, A1, A2 and odd control/emitter pin on D11
 - **Sensor_Array**: The combined 6-sensor array formed by Left_QTR (indices 0–2) and Right_QTR (indices 3–5), ordered left-to-right
@@ -61,7 +61,7 @@ Rework the sumo bot's line follower mode to operate as the default mode with a d
 #### Acceptance Criteria
 
 1. THE Bot SHALL store the Calibration_Duration as a named constant or variable at the top of the source file in the tuning parameters section
-2. THE Bot SHALL default the Calibration_Duration to 15 seconds
+2. THE Bot SHALL default the Calibration_Duration to 10 seconds
 3. WHEN Calibration runs, THE Bot SHALL sweep the motors (alternating clockwise and counter-clockwise) for the full Calibration_Duration while calling the QTR calibrate function repeatedly
 4. WHEN Calibration completes, THE Bot SHALL stop the motors
 

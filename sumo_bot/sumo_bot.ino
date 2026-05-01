@@ -145,7 +145,7 @@ int IR_THRESHOLD      = 180;  // ADC value above this = obstacle detected
 int IR_VERY_CLOSE     = 420;  // ADC value = object at ~12cm (ram trigger)
 
 // --- Calibration ---
-const unsigned long CALIBRATION_DURATION_MS = 15000;  // Configurable, default 15s
+const unsigned long CALIBRATION_DURATION_MS = 10000;  // Configurable, default 10s
 
 // --- Edge Detection ---
 // QTR reads ~800–1000 over white/reflective sumo ring border
@@ -192,8 +192,10 @@ ButtonState btnState = BS_IDLE;
 bool isCalibrated = false;
 
 // Debounce
-const unsigned long DEBOUNCE_MS = 200;
-unsigned long lastButtonPress = 0;
+const unsigned long DEBOUNCE_MS = 50;
+unsigned long lastButtonChange = 0;
+bool lastButtonState = HIGH;   // INPUT_PULLUP: HIGH = not pressed
+bool buttonLatch = false;      // true when a press-and-release cycle completes
 
 // Calibration timing
 unsigned long calibrationStart = 0;

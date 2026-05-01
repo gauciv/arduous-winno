@@ -32,7 +32,7 @@ Rework `sumo_bot.ino` to default to line follower mode with a push button on D10
   - [x] 3.1 Add `ButtonState` enum, state variables, debounce constant, and calibration timing variables
     - Define `BS_IDLE`, `BS_CALIBRATING`, `BS_CALIBRATED_IDLE`, `BS_RUNNING`, `BS_STOPPED`
     - Add `btnState`, `isCalibrated`, `DEBOUNCE_MS = 200`, `lastButtonPress`, `calibrationStart`
-    - Add `CALIBRATION_DURATION_MS = 15000` as a named constant in the tuning parameters section
+    - Add `CALIBRATION_DURATION_MS = 10000` as a named constant in the tuning parameters section
     - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 4.1, 4.2_
   - [x] 3.2 Implement `buttonPressed()` debounce function
     - Read D10, return true only if LOW and at least `DEBOUNCE_MS` since last accepted press
