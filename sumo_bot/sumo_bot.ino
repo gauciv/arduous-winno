@@ -193,9 +193,10 @@ bool isCalibrated = false;
 
 // Debounce
 const unsigned long DEBOUNCE_MS = 50;
-unsigned long lastButtonChange = 0;
-bool lastButtonState = HIGH;   // INPUT_PULLUP: HIGH = not pressed
-bool buttonLatch = false;      // true when a press-and-release cycle completes
+unsigned long lastDebounceTime = 0;
+bool lastRawReading    = HIGH;   // Raw pin reading for edge detection
+bool stableState       = HIGH;   // Debounced stable state
+bool prevStableState   = HIGH;   // Previous stable state for edge detection
 
 // Calibration timing
 unsigned long calibrationStart = 0;
@@ -293,16 +294,31 @@ void loop() {
 //  BUTTON CONTROL
 // ─────────────────────────────────────────────────────────────
 
-// Button read with debounce
+// Button read — returns true ONCE per press (falling-edge detected after debounce)
 bool buttonPressed() {
-  if (digitalRead(LF_BUTTON_PIN) == LOW) {
-    unsigned long now = millis();
-    if (now - lastButtonPress >= DEBOUNCE_MS) {
-      lastButtonPress = now;
-      return true;
-    }
+  bool reading = digitalRead(LF_BUTTON_PIN);
+
+  // If raw reading changed, reset the debounce timer
+  if (reading != lastRawReading) {
+    lastDebounceTime = millis();
   }
-  return false;
+  lastRawReading = reading;
+
+  // Only accept the reading after it's been stable for DEBOUNCE_MS
+  if ((millis() - lastDebounceTime) < DEBOUNCE_MS) {
+    return false;
+  }
+
+  // Reading is stable — check for falling edge (HIGH → LOW = press)
+  bool pressed = false;
+  if (stableState == HIGH && reading == LOW) {
+    pressed = true;  // Falling edge: button was just pressed
+  }
+
+  prevStableState = stableState;
+  stableState = reading;
+
+  return pressed;
 }
 
 // Button state machine — called from loop()
@@ -318,24 +334,39 @@ void handleButtonStateMachine() {
           Serial.print(CALIBRATION_DURATION_MS / 1000);
           Serial.println(F("s..."));
         } else {
+          pidIntegral = 0.0f;
+          pidLastError = 0.0f;
           btnState = BS_RUNNING;
-          Serial.println(F("Line following started."));
+          Serial.println(F("Already calibrated. Line following started."));
         }
       }
       break;
 
     case BS_CALIBRATING:
+      // No button check here — calibration runs to completion uninterrupted
       runCalibrationSweep();
       if (millis() - calibrationStart >= CALIBRATION_DURATION_MS) {
         stopMotors();
-        isCalibrated = true;
-        btnState = BS_CALIBRATED_IDLE;
-        Serial.println(F("Calibration complete. Press button to start."));
+        delay(200);  // Let motors fully stop before validating
+
+        // Validate calibration: check that sensors got meaningful min/max range
+        if (validateCalibration()) {
+          isCalibrated = true;
+          btnState = BS_CALIBRATED_IDLE;
+          Serial.println(F("Calibration complete. Press button to start."));
+        } else {
+          isCalibrated = false;
+          btnState = BS_IDLE;
+          Serial.println(F("Calibration FAILED — sensors did not detect line."));
+          Serial.println(F("Check wiring and sensor placement, then press button to retry."));
+        }
       }
       break;
 
     case BS_CALIBRATED_IDLE:
       if (buttonPressed()) {
+        pidIntegral = 0.0f;
+        pidLastError = 0.0f;
         btnState = BS_RUNNING;
         Serial.println(F("Line following started."));
       }
@@ -353,8 +384,10 @@ void handleButtonStateMachine() {
 
     case BS_STOPPED:
       if (buttonPressed()) {
+        pidIntegral = 0.0f;
+        pidLastError = 0.0f;
         btnState = BS_RUNNING;
-        Serial.println(F("Line following started."));
+        Serial.println(F("Line following resumed."));
       }
       break;
   }
@@ -375,6 +408,39 @@ void runCalibrationSweep() {
   // Calibrate both sensor boards each tick
   qtrLeft.calibrate();
   qtrRight.calibrate();
+}
+
+// Validate that calibration produced meaningful min/max ranges.
+// Returns true if at least one sensor on each board has a range > 200.
+// If all sensors read the same value, calibration failed (no line detected).
+bool validateCalibration() {
+  bool leftOK = false;
+  bool rightOK = false;
+
+  for (uint8_t i = 0; i < SENSORS_PER_BOARD; i++) {
+    uint16_t minVal = qtrLeft.calibrationOn.minimum[i];
+    uint16_t maxVal = qtrLeft.calibrationOn.maximum[i];
+    if (maxVal > minVal + 200) {
+      leftOK = true;
+      break;
+    }
+  }
+
+  for (uint8_t i = 0; i < SENSORS_PER_BOARD; i++) {
+    uint16_t minVal = qtrRight.calibrationOn.minimum[i];
+    uint16_t maxVal = qtrRight.calibrationOn.maximum[i];
+    if (maxVal > minVal + 200) {
+      rightOK = true;
+      break;
+    }
+  }
+
+  Serial.print(F("Cal check — Left board: "));
+  Serial.print(leftOK ? F("OK") : F("FAIL"));
+  Serial.print(F(", Right board: "));
+  Serial.println(rightOK ? F("OK") : F("FAIL"));
+
+  return leftOK && rightOK;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -455,7 +521,7 @@ uint16_t readLinePosition() {
     avg += (uint32_t)val * i * 1000;
     sum += val;
   }
-  if (sum == 0) return 0;
+  if (sum == 0) return 2500;  // No line detected — return center to avoid hard spin
   return avg / sum;
 }
 
