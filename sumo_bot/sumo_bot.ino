@@ -1,817 +1,405 @@
-/*
- * ============================================================
- *  MULTI-PURPOSE SUMO BOT — PRODUCTION CODE
- *  Modes: SUMO | LINE_FOLLOW | BALLOON_POP
- * ============================================================
- *  Hardware:
- *    Arduino Nano
- *    TB6612FNG Motor Driver
- *    2x Pololu QTR-3RC (line/edge detection)
- *    2x Sharp IR GP2Y0A21 (10–80cm, analog)
- *    2x HC-SR04 Ultrasonic Sensors
- *    2x 6V 200RPM DC Motors
- *    LiPo 7.4V XT60
- *
- *  REQUIRED LIBRARY:
- *    QTRSensors by Pololu — install via Arduino Library Manager
- *
- * ============================================================
- *  WIRING GUIDE (MUST match your physical assembly)
- * ============================================================
- *
- *  TB6612FNG:
- *    VM   → Battery (+) through switch
- *    VCC  → Arduino 5V
- *    GND  → Arduino GND
- *    PWMA → D9  (PWM, Left motor speed)
- *    AIN2 → D8  (Left motor direction)
- *    AIN1 → D7  (Left motor direction)
- *    STBY → D6
- *    BIN1 → D5  (Right motor direction)
- *    BIN2 → D4  (Right motor direction)
- *    PWMB → D3  (PWM, Right motor speed)
- *    AO1/AO2 → Left Motor terminals
- *    BO1/BO2 → Right Motor terminals
- *
- *  Ultrasonic sensors removed — pins reassigned to motor driver
- *
- *  QTR-3RC Left sensor array:  D11, A0, A1
- *  QTR-3RC Right sensor array: A2,  A3, A4
- *    (sensor order: leftmost=index 0, rightmost=index 5)
- *
- *  Sharp IR Left  → A5 (analog)
- *  Sharp IR Right → A6 (analog)
- *    NOTE: A6 on Nano is ANALOG ONLY — do not use as digital
- *
- *  Mode Select Button → A7 (analog-only pin, read via analogRead)
- *    Wire: A7 — [10kΩ] — GND, and A7 — Button — 5V
- *    No press = SUMO (default)
- *    Short press (<1s) on boot = LINE_FOLLOW
- *    Long press  (>1s) on boot = BALLOON_POP
- *
- * ============================================================
- *  !! FIRST THING TO VERIFY AFTER UPLOAD !!
- *  Run with motors disconnected first.
- *  Open Serial Monitor at 115200 baud.
- *  Check sensor readings before a live run.
- * ============================================================
- */
-
 #include <QTRSensors.h>
+#include <EEPROM.h>
 
-// ─────────────────────────────────────────────────────────────
-//  PIN DEFINITIONS
-// ─────────────────────────────────────────────────────────────
+// ==========================================
+// PIN DEFINITIONS
+// ==========================================
 
-// Motor driver — TB6612FNG (new wiring)
-const uint8_t PWMA     = 9;   // Left motor speed (PWM)
-const uint8_t AIN2     = 8;   // Left motor direction
-const uint8_t AIN1     = 7;   // Left motor direction
-const uint8_t STBY_PIN = 6;   // Standby
-const uint8_t BIN1     = 5;   // Right motor direction
-const uint8_t BIN2     = 4;   // Right motor direction
-const uint8_t PWMB     = 3;   // Right motor speed (PWM)
+// LEFT TO RIGHT: Far-Left (A2), Mid-Left (A1), Center-Left (A0)
+// Center-Right (A5), Mid-Right (A4), Far-Right (A3)
+const uint8_t SensorCount = 6;
+const uint8_t sensorPins[SensorCount] = {A2, A1, A0, A5, A4, A3};
 
-// Ultrasonic pins removed — pins reassigned to motor driver
-// const uint8_t TRIG1 = 2, ECHO1 = 3;              // Front-left
-// const uint8_t TRIG2 = 9, ECHO2 = 10;             // Front-right
+const int leftEmitterCtrl = 13;
+const int rightEmitterCtrl = 12;
 
-// Line follower button
-const uint8_t LF_BUTTON_PIN = 10;  // INPUT_PULLUP, active LOW
+// Motor Driver (TB6612FNG)
+const int pwmaPin = 9;
+const int ain1Pin = 4;
+const int ain2Pin = 5;
+const int stbyPin = 6;
+const int pwmbPin = 10;
+const int bin1Pin = 7;
+const int bin2Pin = 8;
 
-// Sharp IR (analog)
-const uint8_t IR_LEFT  = A5;
-const uint8_t IR_RIGHT = A6;
+const int buttonPin = 2;
 
-// Mode select button
-const uint8_t MODE_BTN = A7;
+// ==========================================
+// EEPROM LAYOUT
+// ==========================================
+// Addresses  0–11: calibration minimums (6 x uint16_t = 12 bytes)
+// Addresses 12–23: calibration maximums (6 x uint16_t = 12 bytes)
+// Address     24:  magic byte (0xAB) — marks a valid saved calibration
 
-// ─────────────────────────────────────────────────────────────
-//  QTR SENSOR SETUP (two separate boards)
-// ─────────────────────────────────────────────────────────────
-QTRSensors qtrLeft;
-QTRSensors qtrRight;
+const int    EEPROM_MIN_ADDR   = 0;
+const int    EEPROM_MAX_ADDR   = 12;
+const int    EEPROM_MAGIC_ADDR = 24;
+const uint8_t EEPROM_MAGIC     = 0xAB;
 
-const uint8_t SENSORS_PER_BOARD = 3;
-const uint8_t TOTAL_SENSORS     = 6;
+// ==========================================
+// VARIABLES & CONSTANTS
+// ==========================================
 
-// Left board: A3, A4, A5 with emitter on D12
-const uint8_t LEFT_EMITTER_PIN  = 12;
-uint8_t leftSensorPins[SENSORS_PER_BOARD]  = {A3, A4, A5};
+QTRSensors qtr;
 
-// Right board: A0, A1, A2 with emitter on D11
-const uint8_t RIGHT_EMITTER_PIN = 11;
-uint8_t rightSensorPins[SENSORS_PER_BOARD] = {A0, A1, A2};
-
-uint16_t sensorValues[TOTAL_SENSORS];  // Combined: [0..2]=left, [3..5]=right
-
-// ─────────────────────────────────────────────────────────────
-//  OPERATING MODES
-// ─────────────────────────────────────────────────────────────
-enum Mode : uint8_t { SUMO, LINE_FOLLOW, BALLOON_POP };
-Mode currentMode = SUMO;
-
-// ─────────────────────────────────────────────────────────────
-//  TUNING PARAMETERS — adjust these after bench testing
-// ─────────────────────────────────────────────────────────────
-
-// --- Line Follow PID ---
-// Start with KI = 0, tune KP until it tracks, then add KD to damp oscillation
-float KP        = 0.28f;
-float KI        = 0.00008f;
-float KD        = 2.8f;
-int   BASE_SPEED  = 150;    // Normal forward speed (0–255)
-int   MAX_SPEED   = 210;    // Speed cap to keep line tracking stable
-float integralMax = 5000.0f; // Anti-windup clamp
-
-// --- Sumo ---
-int SUMO_FULL_SPEED  = 255;  // Charge speed
-int SUMO_TURN_SPEED  = 160;  // Rotation speed during search
-int CHARGE_DIST_CM   = 50;   // Ultrasonic: charge if enemy within this
-int SEARCH_INTERVAL  = 1400; // ms before reversing search spin direction
-
-// --- Balloon Pop ---
-int BALLOON_APPROACH_SPEED = 180;
-int BALLOON_RAM_SPEED      = 255;
-int BALLOON_RAM_DURATION   = 700;  // ms of full-speed ram
-int BALLOON_SCAN_SPEED     = 120;
-int BALLOON_DETECT_DIST    = 55;   // cm
-
-// --- Sharp IR ---
-// GP2Y0A21: higher ADC = closer object.
-// ~490 at 10cm, ~150 at 40cm, ~80 at 80cm (values vary per unit)
-// Tune by holding hand at ~30cm and reading Serial Monitor
-int IR_THRESHOLD      = 180;  // ADC value above this = obstacle detected
-int IR_VERY_CLOSE     = 420;  // ADC value = object at ~12cm (ram trigger)
-
-// --- Calibration ---
-const unsigned long CALIBRATION_DURATION_MS = 10000;  // Configurable, default 10s
-
-// --- Edge Detection ---
-// QTR reads ~800–1000 over white/reflective sumo ring border
-// QTR reads ~100–300 over black ring surface
-uint16_t EDGE_THRESHOLD   = 700;  // above this = white edge detected
-int      BACKUP_DURATION  = 280;  // ms to reverse when edge found
-
-// ─────────────────────────────────────────────────────────────
-//  STATE VARIABLES
-// ─────────────────────────────────────────────────────────────
-
-// PID
-float pidIntegral  = 0.0f;
-float pidLastError = 0.0f;
-
-// Edge recovery
-bool          isRecovering    = false;
-unsigned long recoverStart    = 0;
-int           recoverLeftSpd  = 0;
-int           recoverRightSpd = 0;
-
-// Sumo state machine
-enum SumoState : uint8_t { S_SEARCH, S_CHARGE };
-SumoState sumoState     = S_SEARCH;
-unsigned long sumoTimer = 0;
-int8_t searchDir        = 1;     // +1 = clockwise, -1 = counter
-
-// Balloon state machine
-enum BalloonState : uint8_t { B_SCAN, B_APPROACH, B_RAM };
-BalloonState balloonState = B_SCAN;
-unsigned long balloonTimer = 0;
-int8_t balloonScanDir = 1;
-
-// Button state machine
-enum ButtonState : uint8_t {
-  BS_IDLE,            // Boot state, not calibrated
-  BS_CALIBRATING,     // Calibration in progress
-  BS_CALIBRATED_IDLE, // Calibrated, waiting for start
-  BS_RUNNING,         // Line following active
-  BS_STOPPED          // Line following paused (toggle)
+enum RobotState {
+  STANDBY_UNCALIBRATED,
+  CALIBRATING,
+  STANDBY_READY,
+  PLAYING
 };
+RobotState currentState = STANDBY_UNCALIBRATED;
 
-ButtonState btnState = BS_IDLE;
-bool isCalibrated = false;
-
-// Debounce
-const unsigned long DEBOUNCE_MS = 50;
+// Button Debouncing
+bool lastButtonReading = HIGH;
+bool buttonState       = HIGH;
 unsigned long lastDebounceTime = 0;
-bool lastRawReading    = HIGH;   // Raw pin reading for edge detection
-bool stableState       = HIGH;   // Debounced stable state
-bool prevStableState   = HIGH;   // Previous stable state for edge detection
+const unsigned long debounceDelay = 50;
 
-// Calibration timing
-unsigned long calibrationStart = 0;
+// ==========================================
+// TUNING VARIABLES
+// ==========================================
 
-// ─────────────────────────────────────────────────────────────
-//  SETUP
-// ─────────────────────────────────────────────────────────────
+int leftMotorOffset  = 0;
+int rightMotorOffset = 0;
+
+float Kp = 0.09;
+float Ki = 0.001;  // Raised from 0.0002 — old value gave max I contribution of ~9
+float Kd = 0.3;
+
+int lastError = 0;
+long integral = 0;
+const long integralMax = 45000;
+
+int baseSpeed = 255;
+int maxSpeed  = 255;
+
+uint16_t sensorValues[SensorCount];
+
+// ==========================================
+// FORWARD DECLARATIONS
+// ==========================================
+
+void handleButtonPress();
+void runAutoWiggleCalibration();
+void followLinePID();
+void setMotors(int leftSpeed, int rightSpeed);
+void stopMotors();
+void saveCalibrationToEEPROM();
+bool loadCalibrationFromEEPROM();
+
+// ==========================================
+// SETUP
+// ==========================================
+
 void setup() {
-  Serial.begin(115200);
-  Serial.println(F("=== Sumo Bot Booting ==="));
-  Serial.println(F("Mode: LINE_FOLLOW (default)"));
+  Serial.begin(115200);  // Faster than 9600 — better for live tuning
 
-  // Motor driver
-  pinMode(AIN1, OUTPUT); pinMode(AIN2, OUTPUT); pinMode(PWMA, OUTPUT);
-  pinMode(BIN1, OUTPUT); pinMode(BIN2, OUTPUT); pinMode(PWMB, OUTPUT);
-  pinMode(STBY_PIN, OUTPUT);
-  digitalWrite(STBY_PIN, HIGH);
+  pinMode(pwmaPin, OUTPUT);
+  pinMode(ain1Pin, OUTPUT);
+  pinMode(ain2Pin, OUTPUT);
+  pinMode(pwmbPin, OUTPUT);
+  pinMode(bin1Pin, OUTPUT);
+  pinMode(bin2Pin, OUTPUT);
+  pinMode(stbyPin, OUTPUT);
+
+  pinMode(leftEmitterCtrl, OUTPUT);
+  pinMode(rightEmitterCtrl, OUTPUT);
+  digitalWrite(leftEmitterCtrl, HIGH);
+  digitalWrite(rightEmitterCtrl, HIGH);
+
+  pinMode(buttonPin, INPUT_PULLUP);
+
+  qtr.setTypeRC();
+  qtr.setSensorPins(sensorPins, SensorCount);
+
   stopMotors();
+  delay(500);
 
-  // Button
-  pinMode(LF_BUTTON_PIN, INPUT_PULLUP);
-
-  // QTR sensors (two boards)
-  qtrLeft.setTypeRC();
-  qtrLeft.setSensorPins(leftSensorPins, SENSORS_PER_BOARD);
-  qtrLeft.setEmitterPin(LEFT_EMITTER_PIN);
-
-  qtrRight.setTypeRC();
-  qtrRight.setSensorPins(rightSensorPins, SENSORS_PER_BOARD);
-  qtrRight.setEmitterPin(RIGHT_EMITTER_PIN);
-
-  // ── Mode selection commented out — defaulting to LINE_FOLLOW ──
-  // Serial.println(F("Mode select window: 3s"));
-  // Serial.println(F("  No press  → SUMO"));
-  // Serial.println(F("  Short press → LINE FOLLOW"));
-  // Serial.println(F("  Long press  → BALLOON POP"));
-  // selectMode();
-  // Serial.print(F("Mode selected: "));
-  // switch (currentMode) {
-  //   case SUMO:        Serial.println(F("SUMO"));        break;
-  //   case LINE_FOLLOW: Serial.println(F("LINE FOLLOW")); break;
-  //   case BALLOON_POP: Serial.println(F("BALLOON POP")); break;
-  // }
-  currentMode = LINE_FOLLOW;
-
-  // ── QTR calibration now handled by button state machine ──
-  // if (currentMode == LINE_FOLLOW) {
-  //   calibrateQTR();
-  // }
-
-  // ── Quick sensor self-check ──
-  // printSensorDiag();
-
-  // Serial.println(F("=== Starting in 2s ==="));
-  // delay(2000);
-
-  Serial.println(F("Calibration not done. Press button to calibrate."));
-  // State starts as BS_IDLE
+  // Attempt to restore saved calibration from EEPROM
+  if (loadCalibrationFromEEPROM()) {
+    currentState = STANDBY_READY;
+    Serial.println("Saved calibration loaded from EEPROM. Skip recalibration.");
+    Serial.println("Press button to START.");
+  } else {
+    currentState = STANDBY_UNCALIBRATED;
+    Serial.println("No saved calibration found.");
+    Serial.println("Place on track and press button to Calibrate.");
+  }
 }
 
-// ─────────────────────────────────────────────────────────────
-//  MAIN LOOP
-// ─────────────────────────────────────────────────────────────
+// ==========================================
+// MAIN LOOP
+// ==========================================
+
 void loop() {
-  handleButtonStateMachine();
+  handleButtonPress();
+
+  switch (currentState) {
+    case STANDBY_UNCALIBRATED: break;
+    case CALIBRATING:
+      runAutoWiggleCalibration();
+      currentState = STANDBY_READY;
+      break;
+    case STANDBY_READY: break;
+    case PLAYING:
+      followLinePID();
+      break;
+  }
 }
 
-// ── Old loop() body — preserved for reference ──
-// void loop() {
-//   // ── Edge detection: highest priority, runs every tick ──
-//   if (!isRecovering) {
-//     if (detectEdge()) {
-//       startEdgeRecovery();
-//       return;
-//     }
-//   }
-//   if (isRecovering) {
-//     if (millis() - recoverStart >= (unsigned long)BACKUP_DURATION) {
-//       isRecovering = false;
-//       stopMotors();
-//       delay(50);
-//     }
-//     return; // Don't run mode logic while recovering
-//   }
-//
-//   // ── Mode logic ──
-//   switch (currentMode) {
-//     case LINE_FOLLOW: runLineFollow();  break;
-//     case SUMO:        runSumo();        break;
-//     case BALLOON_POP: runBalloonPop();  break;
-//   }
-// }
+// ==========================================
+// STATE MACHINE & BUTTON LOGIC
+// ==========================================
 
-// ─────────────────────────────────────────────────────────────
-//  BUTTON CONTROL
-// ─────────────────────────────────────────────────────────────
+void handleButtonPress() {
+  bool reading = digitalRead(buttonPin);
 
-// Button read — returns true ONCE per press (falling-edge detected after debounce)
-bool buttonPressed() {
-  bool reading = digitalRead(LF_BUTTON_PIN);
-
-  // If raw reading changed, reset the debounce timer
-  if (reading != lastRawReading) {
+  if (reading != lastButtonReading) {
     lastDebounceTime = millis();
   }
-  lastRawReading = reading;
 
-  // Only accept the reading after it's been stable for DEBOUNCE_MS
-  if ((millis() - lastDebounceTime) < DEBOUNCE_MS) {
-    return false;
-  }
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    if (reading != buttonState) {
+      buttonState = reading;
 
-  // Reading is stable — check for falling edge (HIGH → LOW = press)
-  bool pressed = false;
-  if (stableState == HIGH && reading == LOW) {
-    pressed = true;  // Falling edge: button was just pressed
-  }
+      if (buttonState == LOW) {
+        if (currentState == STANDBY_UNCALIBRATED) {
+          currentState = CALIBRATING;
+        }
+        else if (currentState == STANDBY_READY) {
+          Serial.println("State: PLAYING. Escaping Start Box!");
 
-  prevStableState = stableState;
-  stableState = reading;
+          lastError = 0;
+          integral  = 0;
 
-  return pressed;
-}
+          setMotors(150, 150);
+          delay(400);
 
-// Button state machine — called from loop()
-void handleButtonStateMachine() {
-  switch (btnState) {
-
-    case BS_IDLE:
-      if (buttonPressed()) {
-        if (!isCalibrated) {
-          btnState = BS_CALIBRATING;
-          calibrationStart = millis();
-          Serial.print(F("Calibrating for "));
-          Serial.print(CALIBRATION_DURATION_MS / 1000);
-          Serial.println(F("s..."));
-        } else {
-          pidIntegral = 0.0f;
-          pidLastError = 0.0f;
-          btnState = BS_RUNNING;
-          Serial.println(F("Already calibrated. Line following started."));
+          currentState = PLAYING;
+        }
+        else if (currentState == PLAYING) {
+          stopMotors();
+          currentState = STANDBY_READY;
+          Serial.println("State: STANDBY. Motors Stopped.");
         }
       }
-      break;
-
-    case BS_CALIBRATING:
-      // No button check here — calibration runs to completion uninterrupted
-      runCalibrationSweep();
-      if (millis() - calibrationStart >= CALIBRATION_DURATION_MS) {
-        stopMotors();
-        delay(200);  // Let motors fully stop before validating
-
-        // Validate calibration: check that sensors got meaningful min/max range
-        if (validateCalibration()) {
-          isCalibrated = true;
-          btnState = BS_CALIBRATED_IDLE;
-          Serial.println(F("Calibration complete. Press button to start."));
-        } else {
-          isCalibrated = false;
-          btnState = BS_IDLE;
-          Serial.println(F("Calibration FAILED — sensors did not detect line."));
-          Serial.println(F("Check wiring and sensor placement, then press button to retry."));
-        }
-      }
-      break;
-
-    case BS_CALIBRATED_IDLE:
-      if (buttonPressed()) {
-        pidIntegral = 0.0f;
-        pidLastError = 0.0f;
-        btnState = BS_RUNNING;
-        Serial.println(F("Line following started."));
-      }
-      break;
-
-    case BS_RUNNING:
-      if (buttonPressed()) {
-        stopMotors();
-        btnState = BS_STOPPED;
-        Serial.println(F("Line following stopped."));
-      } else {
-        runLineFollow();
-      }
-      break;
-
-    case BS_STOPPED:
-      if (buttonPressed()) {
-        pidIntegral = 0.0f;
-        pidLastError = 0.0f;
-        btnState = BS_RUNNING;
-        Serial.println(F("Line following resumed."));
-      }
-      break;
+    }
   }
+  lastButtonReading = reading;
 }
 
-// Non-blocking calibration sweep — called each tick while BS_CALIBRATING
-void runCalibrationSweep() {
-  unsigned long elapsed = millis() - calibrationStart;
-  unsigned long halfDuration = CALIBRATION_DURATION_MS / 2;
+// ==========================================
+// AUTOMATIC CALIBRATION
+// ==========================================
 
-  // First half: CW sweep. Second half: CCW sweep.
-  if (elapsed < halfDuration) {
-    setMotors(110, -110);
-  } else {
-    setMotors(-110, 110);
-  }
+void runAutoWiggleCalibration() {
+  Serial.println("Calibrating...");
+  delay(1000);
 
-  // Calibrate both sensor boards each tick
-  qtrLeft.calibrate();
-  qtrRight.calibrate();
+  setMotors(-90, 90);
+  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
+
+  stopMotors(); delay(250);
+
+  setMotors(90, -90);
+  for (int i = 0; i < 80; i++) { qtr.calibrate(); delay(5); }
+
+  stopMotors(); delay(250);
+
+  setMotors(-90, 90);
+  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
+
+  stopMotors();
+
+  // Persist calibration so next boot skips this step
+  saveCalibrationToEEPROM();
+
+  Serial.println("Calibration Done & Saved to EEPROM.");
+  Serial.println("Place on Grey Start Box and press button to run.");
 }
 
-// Validate that calibration produced meaningful min/max ranges.
-// Returns true if at least one sensor on each board has a range > 200.
-// If all sensors read the same value, calibration failed (no line detected).
-bool validateCalibration() {
-  bool leftOK = false;
-  bool rightOK = false;
+// ==========================================
+// PID LINE FOLLOWING
+// ==========================================
 
-  for (uint8_t i = 0; i < SENSORS_PER_BOARD; i++) {
-    uint16_t minVal = qtrLeft.calibrationOn.minimum[i];
-    uint16_t maxVal = qtrLeft.calibrationOn.maximum[i];
-    if (maxVal > minVal + 200) {
-      leftOK = true;
+void followLinePID() {
+  uint16_t position = qtr.readLineBlack(sensorValues);
+
+  // ---------------------------------------------------------
+  // LINE-LOST DETECTION
+  // If no sensor sees the line, spin slowly toward the last
+  // known direction instead of flying off the track.
+  // ---------------------------------------------------------
+  bool lineDetected = false;
+  for (int i = 0; i < SensorCount; i++) {
+    if (sensorValues[i] > 200) {
+      lineDetected = true;
       break;
     }
   }
 
-  for (uint8_t i = 0; i < SENSORS_PER_BOARD; i++) {
-    uint16_t minVal = qtrRight.calibrationOn.minimum[i];
-    uint16_t maxVal = qtrRight.calibrationOn.maximum[i];
-    if (maxVal > minVal + 200) {
-      rightOK = true;
-      break;
+  if (!lineDetected) {
+    int searchSpeed = 130;
+    if (lastError > 0) {
+      setMotors(searchSpeed, -searchSpeed);  // Spin right — line was to the right
+    } else {
+      setMotors(-searchSpeed, searchSpeed);  // Spin left  — line was to the left
     }
+    return;
   }
 
-  Serial.print(F("Cal check — Left board: "));
-  Serial.print(leftOK ? F("OK") : F("FAIL"));
-  Serial.print(F(", Right board: "));
-  Serial.println(rightOK ? F("OK") : F("FAIL"));
+  int error   = (int)position - 2500;
+  int absError = abs(error);
 
-  return leftOK && rightOK;
-}
+  // ---------------------------------------------------------
+  // 90-DEGREE SNAP OVERRIDE
+  // Added 1500ms spin timeout — prevents infinite spin if
+  // the sensor loses the line mid-turn.
+  // ---------------------------------------------------------
+  if (error > 2000) {
+    setMotors(150, 150);
+    delay(70);
 
-// ─────────────────────────────────────────────────────────────
-//  MODE SELECTION
-// ─────────────────────────────────────────────────────────────
-void selectMode() {
-  unsigned long windowStart = millis();
-  unsigned long pressStart  = 0;
-  bool pressing = false;
-  currentMode = SUMO; // default
-
-  while (millis() - windowStart < 3000) {
-    bool btnHeld = (analogRead(MODE_BTN) > 512);
-
-    if (btnHeld && !pressing) {
-      pressing   = true;
-      pressStart = millis();
+    unsigned long spinStart = millis();
+    while (millis() - spinStart < 1500) {
+      setMotors(220, -220);
+      qtr.readCalibrated(sensorValues);
+      if (sensorValues[2] > 400 || sensorValues[3] > 400) break;
     }
 
-    if (!btnHeld && pressing) {
-      unsigned long held = millis() - pressStart;
-      currentMode = (held < 1000) ? LINE_FOLLOW : BALLOON_POP;
-      break;
+    lastError = 0;
+    integral  = 0;
+    return;
+  }
+  else if (error < -2000) {
+    setMotors(150, 150);
+    delay(70);
+
+    unsigned long spinStart = millis();
+    while (millis() - spinStart < 1500) {
+      setMotors(-220, 220);
+      qtr.readCalibrated(sensorValues);
+      if (sensorValues[2] > 400 || sensorValues[3] > 400) break;
     }
-    delay(10);
+
+    lastError = 0;
+    integral  = 0;
+    return;
   }
-}
 
-// ─────────────────────────────────────────────────────────────
-//  QTR CALIBRATION
-// ─────────────────────────────────────────────────────────────
-// calibrateQTR() — replaced by runCalibrationSweep() in the button state machine
-// void calibrateQTR() {
-//   Serial.println(F("Calibrating QTR — sweeping over line for 3s..."));
-//   for (int i = 0; i < 80; i++) {
-//     setMotors(110, -110);
-//     qtr.calibrate();
-//     delay(15);
-//   }
-//   for (int i = 0; i < 80; i++) {
-//     setMotors(-110, 110);
-//     qtr.calibrate();
-//     delay(15);
-//   }
-//   stopMotors();
-//   delay(200);
-//   Serial.println(F("Calibration complete."));
-// }
+  // ---------------------------------------------------------
+  // SMOOTH PROGRESSIVE SPEED SCALING
+  // Replaced hard if/else tiers with map() for linear ramp —
+  // eliminates the jarring speed jump between tiers.
+  // ---------------------------------------------------------
+  int currentBaseSpeed;
 
-// ─────────────────────────────────────────────────────────────
-//  COMBINED SENSOR READ HELPERS
-// ─────────────────────────────────────────────────────────────
-
-// Reads both boards into the combined sensorValues[6] array
-void readAllSensors() {
-  uint16_t leftVals[SENSORS_PER_BOARD];
-  uint16_t rightVals[SENSORS_PER_BOARD];
-  qtrLeft.read(leftVals);
-  qtrRight.read(rightVals);
-  memcpy(&sensorValues[0], leftVals, sizeof(leftVals));
-  memcpy(&sensorValues[SENSORS_PER_BOARD], rightVals, sizeof(rightVals));
-}
-
-// Returns line position 0–5000 using calibrated values from both boards
-uint16_t readLinePosition() {
-  uint16_t leftVals[SENSORS_PER_BOARD];
-  uint16_t rightVals[SENSORS_PER_BOARD];
-  qtrLeft.readCalibrated(leftVals);
-  qtrRight.readCalibrated(rightVals);
-  memcpy(&sensorValues[0], leftVals, sizeof(leftVals));
-  memcpy(&sensorValues[SENSORS_PER_BOARD], rightVals, sizeof(rightVals));
-
-  // Manual line position calculation (weighted average)
-  uint32_t avg = 0;
-  uint32_t sum = 0;
-  for (uint8_t i = 0; i < TOTAL_SENSORS; i++) {
-    uint16_t val = sensorValues[i];
-    avg += (uint32_t)val * i * 1000;
-    sum += val;
+  if (absError > 1500) {
+    // Extreme corner — hard brake
+    currentBaseSpeed = map(absError, 1500, 2500, 160, 100);
+    currentBaseSpeed = constrain(currentBaseSpeed, 100, 160);
   }
-  if (sum == 0) return 2500;  // No line detected — return center to avoid hard spin
-  return avg / sum;
+  else if (absError > 500) {
+    // Sweeping curve — medium brake
+    currentBaseSpeed = map(absError, 500, 1500, baseSpeed, 160);
+    currentBaseSpeed = constrain(currentBaseSpeed, 160, baseSpeed);
+  }
+  else {
+    // Straight — full speed
+    currentBaseSpeed = baseSpeed;
+  }
+
+  // ---------------------------------------------------------
+  // INTEGRAL (anti-windup + sign-change reset)
+  // ---------------------------------------------------------
+  if (absError < 800) {
+    integral += error;
+    integral = constrain(integral, -integralMax, integralMax);
+  }
+
+  if ((lastError < 0 && error > 0) || (lastError > 0 && error < 0)) {
+    integral = 0;
+  }
+
+  // ---------------------------------------------------------
+  // CORE PID MATH
+  // ---------------------------------------------------------
+  // Suppress derivative spike on the very first reading
+  int D = (lastError == 0) ? 0 : (error - lastError);
+
+  int motorSpeedAdjustment = (int)((Kp * error) + (Ki * integral) + (Kd * D));
+  lastError = error;
+
+  int leftMotorSpeed  = currentBaseSpeed + motorSpeedAdjustment + leftMotorOffset;
+  int rightMotorSpeed = currentBaseSpeed - motorSpeedAdjustment + rightMotorOffset;
+
+  // Final constrain is inside setMotors() — no need to do it here
+  setMotors(leftMotorSpeed, rightMotorSpeed);
 }
 
-// ─────────────────────────────────────────────────────────────
-//  EDGE DETECTION
-// ─────────────────────────────────────────────────────────────
-// Sumo rings have a white border. High QTR reading = white = edge.
-// For line follow: white = track surface, different handling applies.
-bool edgeTriggeredLeft  = false;
-bool edgeTriggeredRight = false;
+// ==========================================
+// MOTOR HELPER FUNCTIONS
+// ==========================================
 
-// detectEdge() — commented out, uses old single qtr object and not needed in line-follow-only mode
-// bool detectEdge() {
-//   readAllSensors();
-//   edgeTriggeredLeft  = (sensorValues[0] > EDGE_THRESHOLD || sensorValues[1] > EDGE_THRESHOLD);
-//   edgeTriggeredRight = (sensorValues[4] > EDGE_THRESHOLD || sensorValues[5] > EDGE_THRESHOLD);
-//   if (currentMode == LINE_FOLLOW) return false;
-//   return edgeTriggeredLeft || edgeTriggeredRight;
-// }
-
-// startEdgeRecovery() — commented out, not needed in line-follow-only mode
-// void startEdgeRecovery() {
-//   isRecovering  = true;
-//   recoverStart  = millis();
-//   if (edgeTriggeredLeft && !edgeTriggeredRight) {
-//     recoverLeftSpd  = -200;
-//     recoverRightSpd = -240;
-//   } else if (edgeTriggeredRight && !edgeTriggeredLeft) {
-//     recoverLeftSpd  = -240;
-//     recoverRightSpd = -200;
-//   } else {
-//     recoverLeftSpd  = -230;
-//     recoverRightSpd = -230;
-//   }
-//   setMotors(recoverLeftSpd, recoverRightSpd);
-// }
-
-// ─────────────────────────────────────────────────────────────
-//  LINE FOLLOWING — PID CONTROL
-// ─────────────────────────────────────────────────────────────
-void runLineFollow() {
-  // readLinePosition: returns 0 (far left) to 5000 (far right)
-  // 2500 = line centered under sensor array
-  uint16_t pos   = readLinePosition();
-  float    error = (float)pos - 2500.0f;
-
-  // Accumulate integral with anti-windup
-  pidIntegral += error;
-  if      (pidIntegral >  integralMax) pidIntegral =  integralMax;
-  else if (pidIntegral < -integralMax) pidIntegral = -integralMax;
-
-  float derivative = error - pidLastError;
-  float correction = KP * error + KI * pidIntegral + KD * derivative;
-  pidLastError = error;
-
-  int leftSpeed  = constrain(BASE_SPEED + (int)correction, -MAX_SPEED, MAX_SPEED);
-  int rightSpeed = constrain(BASE_SPEED - (int)correction, -MAX_SPEED, MAX_SPEED);
-
-  setMotors(leftSpeed, rightSpeed);
-}
-
-// ─────────────────────────────────────────────────────────────
-//  SUMO MODE — STATE MACHINE
-// ─────────────────────────────────────────────────────────────
-// runSumo() — commented out, references undefined ultrasonic pins (TRIG1/ECHO1/TRIG2/ECHO2)
-// Not used in line-follow-only mode. Preserved for future re-enablement.
-// void runSumo() {
-//   float distL = getUltrasonicCm(TRIG1, ECHO1);
-//   float distR = getUltrasonicCm(TRIG2, ECHO2);
-//   bool  irL   = (analogRead(IR_LEFT)  > IR_THRESHOLD);
-//   bool  irR   = (analogRead(IR_RIGHT) > IR_THRESHOLD);
-//   bool enemyL = (distL < CHARGE_DIST_CM) || irL;
-//   bool enemyR = (distR < CHARGE_DIST_CM) || irR;
-//   bool enemyDetected = enemyL || enemyR;
-//   if (enemyDetected) {
-//     sumoState = S_CHARGE;
-//     sumoTimer = millis();
-//   }
-//   switch (sumoState) {
-//     case S_SEARCH:
-//       if (millis() - sumoTimer > (unsigned long)SEARCH_INTERVAL) {
-//         searchDir = -searchDir;
-//         sumoTimer = millis();
-//       }
-//       setMotors(SUMO_TURN_SPEED * searchDir, -SUMO_TURN_SPEED * searchDir);
-//       break;
-//     case S_CHARGE:
-//       if (!enemyDetected) {
-//         sumoState = S_SEARCH;
-//         sumoTimer = millis();
-//         stopMotors();
-//         delay(80);
-//         break;
-//       }
-//       if (enemyL && enemyR) {
-//         setMotors(SUMO_FULL_SPEED, SUMO_FULL_SPEED);
-//       } else if (enemyL) {
-//         setMotors(SUMO_FULL_SPEED / 2, SUMO_FULL_SPEED);
-//       } else {
-//         setMotors(SUMO_FULL_SPEED, SUMO_FULL_SPEED / 2);
-//       }
-//       break;
-//   }
-// }
-
-// ─────────────────────────────────────────────────────────────
-//  BALLOON POP MODE — STATE MACHINE
-// ─────────────────────────────────────────────────────────────
-// runBalloonPop() — commented out, references undefined ultrasonic pins (TRIG1/ECHO1/TRIG2/ECHO2)
-// Not used in line-follow-only mode. Preserved for future re-enablement.
-// void runBalloonPop() {
-//   float distL = getUltrasonicCm(TRIG1, ECHO1);
-//   float distR = getUltrasonicCm(TRIG2, ECHO2);
-//   bool  irL   = (analogRead(IR_LEFT)  > IR_THRESHOLD);
-//   bool  irR   = (analogRead(IR_RIGHT) > IR_THRESHOLD);
-//   bool targetL   = (distL < BALLOON_DETECT_DIST) || irL;
-//   bool targetR   = (distR < BALLOON_DETECT_DIST) || irR;
-//   bool targetAny = targetL || targetR;
-//   bool veryClose = (analogRead(IR_LEFT)  > IR_VERY_CLOSE ||
-//                     analogRead(IR_RIGHT) > IR_VERY_CLOSE ||
-//                     distL < 14 || distR < 14);
-//   switch (balloonState) {
-//     case B_SCAN:
-//       if (millis() - balloonTimer > 2200) {
-//         balloonScanDir = -balloonScanDir;
-//         balloonTimer   = millis();
-//       }
-//       setMotors(BALLOON_SCAN_SPEED * balloonScanDir,
-//                -BALLOON_SCAN_SPEED * balloonScanDir);
-//       if (targetAny) {
-//         balloonState = B_APPROACH;
-//         balloonTimer = millis();
-//       }
-//       break;
-//     case B_APPROACH:
-//       if (veryClose) {
-//         balloonState = B_RAM;
-//         balloonTimer = millis();
-//         break;
-//       }
-//       if (!targetAny) {
-//         balloonState = B_SCAN;
-//         balloonTimer = millis();
-//         break;
-//       }
-//       if (targetL && targetR) {
-//         setMotors(BALLOON_APPROACH_SPEED, BALLOON_APPROACH_SPEED);
-//       } else if (targetL) {
-//         setMotors(BALLOON_APPROACH_SPEED / 2, BALLOON_APPROACH_SPEED);
-//       } else {
-//         setMotors(BALLOON_APPROACH_SPEED, BALLOON_APPROACH_SPEED / 2);
-//       }
-//       break;
-//     case B_RAM:
-//       setMotors(BALLOON_RAM_SPEED, BALLOON_RAM_SPEED);
-//       if (millis() - balloonTimer >= (unsigned long)BALLOON_RAM_DURATION) {
-//         stopMotors();
-//         delay(100);
-//         setMotors(-180, -180);
-//         delay(200);
-//         stopMotors();
-//         balloonState = B_SCAN;
-//         balloonTimer = millis();
-//       }
-//       break;
-//   }
-// }
-
-// ─────────────────────────────────────────────────────────────
-//  MOTOR CONTROL
-// ─────────────────────────────────────────────────────────────
-// speed range: -255 (full reverse) to +255 (full forward)
-// IF ONE MOTOR RUNS BACKWARDS: swap its AIN1/AIN2 wires physically,
-// or swap its AIN1/AIN2 pin definitions above.
 void setMotors(int leftSpeed, int rightSpeed) {
+  digitalWrite(stbyPin, HIGH);
+
+  // Single constrain point — removed redundant ones from followLinePID()
   leftSpeed  = constrain(leftSpeed,  -255, 255);
   rightSpeed = constrain(rightSpeed, -255, 255);
 
-  // Left motor (Channel A)
   if (leftSpeed >= 0) {
-    digitalWrite(AIN1, HIGH);
-    digitalWrite(AIN2, LOW);
+    digitalWrite(ain1Pin, LOW);
+    digitalWrite(ain2Pin, HIGH);
+    analogWrite(pwmaPin, leftSpeed);
   } else {
-    digitalWrite(AIN1, LOW);
-    digitalWrite(AIN2, HIGH);
-    leftSpeed = -leftSpeed;
+    digitalWrite(ain1Pin, HIGH);
+    digitalWrite(ain2Pin, LOW);
+    analogWrite(pwmaPin, -leftSpeed);
   }
-  analogWrite(PWMA, (uint8_t)leftSpeed);
 
-  // Right motor (Channel B)
   if (rightSpeed >= 0) {
-    digitalWrite(BIN1, HIGH);
-    digitalWrite(BIN2, LOW);
+    digitalWrite(bin1Pin, LOW);
+    digitalWrite(bin2Pin, HIGH);
+    analogWrite(pwmbPin, rightSpeed);
   } else {
-    digitalWrite(BIN1, LOW);
-    digitalWrite(BIN2, HIGH);
-    rightSpeed = -rightSpeed;
+    digitalWrite(bin1Pin, HIGH);
+    digitalWrite(bin2Pin, LOW);
+    analogWrite(pwmbPin, -rightSpeed);
   }
-  analogWrite(PWMB, (uint8_t)rightSpeed);
 }
 
 void stopMotors() {
-  analogWrite(PWMA, 0);
-  analogWrite(PWMB, 0);
-  digitalWrite(AIN1, LOW); digitalWrite(AIN2, LOW);
-  digitalWrite(BIN1, LOW); digitalWrite(BIN2, LOW);
+  digitalWrite(stbyPin, LOW);
+  analogWrite(pwmaPin, 0);
+  analogWrite(pwmbPin, 0);
 }
 
-// ─────────────────────────────────────────────────────────────
-//  SENSOR UTILITIES
-// ─────────────────────────────────────────────────────────────
-// Returns distance in cm, or 999.0 if no echo / out of range.
-// Timeout = 23ms (~395cm) to prevent blocking on open air reads.
-// getUltrasonicCm() — commented out, ultrasonic sensors removed (pins reassigned to motor driver)
-// Preserved for future re-enablement.
-// float getUltrasonicCm(uint8_t trigPin, uint8_t echoPin) {
-//   digitalWrite(trigPin, LOW);
-//   delayMicroseconds(2);
-//   digitalWrite(trigPin, HIGH);
-//   delayMicroseconds(10);
-//   digitalWrite(trigPin, LOW);
-//   long duration = pulseIn(echoPin, HIGH, 23000UL);
-//   if (duration == 0) return 999.0f;
-//   return duration * 0.01723f;
-// }
+// ==========================================
+// EEPROM CALIBRATION SAVE / LOAD
+// ==========================================
 
-// ─────────────────────────────────────────────────────────────
-//  DIAGNOSTIC PRINT (runs once on boot via Serial Monitor)
-// ─────────────────────────────────────────────────────────────
-// printSensorDiag() — commented out, references undefined qtr object and ultrasonic pins
-// Preserved for future re-enablement.
-// void printSensorDiag() {
-//   Serial.println(F("\n--- Sensor Diagnostic ---"));
-//   // Ultrasonic — removed, pins reassigned
-//   // float d1 = getUltrasonicCm(TRIG1, ECHO1);
-//   // float d2 = getUltrasonicCm(TRIG2, ECHO2);
-//   // Serial.print(F("Ultrasonic L: ")); Serial.print(d1); Serial.println(F(" cm"));
-//   // Serial.print(F("Ultrasonic R: ")); Serial.print(d2); Serial.println(F(" cm"));
-//   // Sharp IR (raw ADC)
-//   int irL = analogRead(IR_LEFT);
-//   int irR = analogRead(IR_RIGHT);
-//   Serial.print(F("Sharp IR L (ADC): ")); Serial.println(irL);
-//   Serial.print(F("Sharp IR R (ADC): ")); Serial.println(irR);
-//   Serial.println(F("  (Hold hand ~30cm in front. Should read ~200-300)"));
-//   // QTR raw — updated to use readAllSensors()
-//   readAllSensors();
-//   Serial.print(F("QTR raw (0=dark/1000=white): "));
-//   for (uint8_t i = 0; i < TOTAL_SENSORS; i++) {
-//     Serial.print(sensorValues[i]);
-//     Serial.print(F(" "));
-//   }
-//   Serial.println();
-//   Serial.println(F("  (Place on ring: ~100–300. Place on white edge: ~700–1000)"));
-//   Serial.println(F("--- End Diagnostic ---\n"));
-// }
+void saveCalibrationToEEPROM() {
+  for (int i = 0; i < SensorCount; i++) {
+    EEPROM.put(EEPROM_MIN_ADDR + i * 2, qtr.calibrationOn.minimum[i]);
+    EEPROM.put(EEPROM_MAX_ADDR + i * 2, qtr.calibrationOn.maximum[i]);
+  }
+  EEPROM.write(EEPROM_MAGIC_ADDR, EEPROM_MAGIC);
+  Serial.println("Calibration saved to EEPROM.");
+}
 
-/*
- * ============================================================
- *  TUNING CHECKLIST (do this before the demo!)
- * ============================================================
- *
- *  1. MOTOR POLARITY
- *     Upload, open Serial, place bot on a surface.
- *     Temporarily call setMotors(150,150) in setup().
- *     Both motors should drive FORWARD. If one goes backward,
- *     swap that motor's AIN1/AIN2 definitions at the top.
- *
- *  2. QTR EDGE THRESHOLD
- *     Run printSensorDiag() with bot on the ring (black area)
- *     and note the values (~100–300).
- *     Then place on the white border and note values (~700–1000).
- *     Set EDGE_THRESHOLD to halfway between the two ranges.
- *
- *  3. SHARP IR THRESHOLD
- *     Hold your hand at ~30cm from each IR sensor.
- *     Read ADC from Serial Monitor.
- *     Set IR_THRESHOLD to ~80% of that reading.
- *     Set IR_VERY_CLOSE to value seen when hand is at ~12cm.
- *
- *  4. ULTRASONIC DISTANCES
- *     Verify with a ruler. Should match reasonably (~±2cm).
- *
- *  5. PID (line follow)
- *     Start KI = 0, KD = 0. Raise KP until bot oscillates.
- *     Then raise KD until oscillation damps.
- *     Only add KI if the bot consistently drifts off center.
- *
- *  6. SUMO SPEED & TIMING
- *     SUMO_FULL_SPEED = 255 is fine for the demo.
- *     Adjust SEARCH_INTERVAL if the bot overshoots the enemy too often.
- *
- * ============================================================
- */
+bool loadCalibrationFromEEPROM() {
+  if (EEPROM.read(EEPROM_MAGIC_ADDR) != EEPROM_MAGIC) {
+    return false;  // No valid calibration stored
+  }
+  // Run one dummy calibrate() to allocate the library's internal arrays
+  // before we overwrite them with our saved values
+  qtr.calibrate();
+  for (int i = 0; i < SensorCount; i++) {
+    EEPROM.get(EEPROM_MIN_ADDR + i * 2, qtr.calibrationOn.minimum[i]);
+    EEPROM.get(EEPROM_MAX_ADDR + i * 2, qtr.calibrationOn.maximum[i]);
+  }
+  Serial.println("Calibration loaded from EEPROM.");
+  return true;
+}
