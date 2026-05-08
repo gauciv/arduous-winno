@@ -32,6 +32,23 @@ void loopLineFollower() {
   }
 }
 
+// ---------------------------------------------------------
+// SMART DELAY FUNCTION (Checks button while waiting)
+// ---------------------------------------------------------
+bool safeDelay(unsigned long waitTime) {
+  unsigned long start = millis();
+  while ((millis() - start) < waitTime) {
+    handleMasterButton();
+    // If the button changed the state to anything other than PLAYING, abort instantly
+    if (currentState != PLAYING) {
+      return false; 
+    }
+  }
+  return true; // Finished the delay safely
+}
+
+// ---------------------------------------------------------
+
 void runAutoWiggleCalibration() {
   Serial.println("Calibrating Line Sensors (Wiggle)...");
   delay(1000); 
@@ -71,25 +88,45 @@ void followLinePID() {
   // 90-DEGREE SNAP OVERRIDE
   // ---------------------------------------------------------
   if (error > 1000) {
-    setMotors(200, 200); delay(60); 
-    brakeMotors(); delay(50);
+    setMotors(200, 200); 
+    if (!safeDelay(60)) return; // Waits 60ms, aborts if button pressed
+    
+    brakeMotors(); 
+    if (!safeDelay(50)) return; // Waits 50ms, aborts if button pressed
+
     while (true) {
+      handleMasterButton(); 
+      if (currentState != PLAYING) return; // Abort instantly if stopped
+
       setMotors(160, -160);
       qtr.readCalibrated(sensorValues); 
       if (sensorValues[1] > 650 || sensorValues[2] > 650) break;
     }
-    brakeMotors(); delay(20);
+    
+    brakeMotors(); 
+    if (!safeDelay(20)) return;
+    
     lf_lastError = 0; lf_integral = 0; return; 
   } 
   else if (error < -1000) {
-    setMotors(200, 200); delay(60); 
-    brakeMotors(); delay(50);
+    setMotors(200, 200); 
+    if (!safeDelay(60)) return; 
+    
+    brakeMotors(); 
+    if (!safeDelay(50)) return; 
+
     while (true) {
+      handleMasterButton(); 
+      if (currentState != PLAYING) return; 
+
       setMotors(-160, 160); 
       qtr.readCalibrated(sensorValues);
       if (sensorValues[1] > 650 || sensorValues[2] > 650) break;
     }
-    brakeMotors(); delay(20);
+    
+    brakeMotors(); 
+    if (!safeDelay(20)) return;
+
     lf_lastError = 0; lf_integral = 0; return;
   }
 

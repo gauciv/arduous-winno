@@ -24,7 +24,7 @@ RobotState currentState = STANDBY_UNCALIBRATED;
 // PIN DEFINITIONS (MASTER)
 // ==========================================
 // Input Pins
-const int buttonPin = 13; // Activator Button
+const int buttonPin = 11; // Activator Button (MOVED FROM D13 TO D11)
 const int dipPin3 = 3;    // DIP Switch Bit 1 (D3)
 const int dipPin2 = 2;    // DIP Switch Bit 0 (D2)
 
@@ -37,19 +37,19 @@ const int pwmbPin = 10;
 const int bin1Pin = 7;  
 const int bin2Pin = 8;
 
-// QTR Sensors (Shared between Line Follower & Sumo Edge Detection)
+// QTR Sensors
 const uint8_t SensorCount = 4;
 const uint8_t sensorPins[SensorCount] = {A1, A0, A5, A4};
 const int EmitterCtrl = 12;
 QTRSensors qtr;
 uint16_t sensorValues[SensorCount];
 
-// Sumo Sensors (Conflict-Free Pinout)
+// Sumo & Balloon Sensors
 const int leftIrPin = A6;      // Sharp IR Left
 const int rightIrPin = A7;     // Sharp IR Right
 const int leftUsEcho = A2;     // Ultrasonic Echo Left
 const int rightUsEcho = A3;    // Ultrasonic Echo Right
-const int sharedUsTrig = 11;   // Shared Ultrasonic Trigger
+const int sharedUsTrig = 13;   // Shared Ultrasonic Trigger (MOVED FROM D11 TO D13)
 
 // Global Button Variables
 bool lastButtonReading = LOW;
@@ -73,9 +73,9 @@ void setup() {
   pinMode(stbyPin, OUTPUT);
 
   // Input Pins
-  pinMode(buttonPin, INPUT); 
-  pinMode(dipPin3, INPUT); // Use INPUT_PULLUP if not physically pulled down
-  pinMode(dipPin2, INPUT); 
+  pinMode(buttonPin, INPUT_PULLUP); 
+  pinMode(dipPin3, INPUT_PULLUP); 
+  pinMode(dipPin2, INPUT_PULLUP); 
 
   // QTR Setup
   pinMode(EmitterCtrl, OUTPUT);
@@ -89,7 +89,7 @@ void setup() {
   pinMode(rightUsEcho, INPUT);
 
   stopMotors();
-  Serial.println("System Powered On. Select mode via DIP and press D13.");
+  Serial.println("System Powered On. Select mode via DIP and press D11.");
 }
 
 // ==========================================
@@ -114,8 +114,8 @@ void loop() {
 // MASTER STATE MACHINE
 // ==========================================
 RobotMode getDipSwitchMode() {
-  bool d3 = digitalRead(dipPin3);
-  bool d2 = digitalRead(dipPin2);
+  bool d3 = !digitalRead(dipPin3);
+  bool d2 = !digitalRead(dipPin2);
   
   if (!d3 && !d2) return MODE_STANDBY;       // 00
   if (d3 && !d2)  return MODE_LINE_FOLLOWER; // 01 (D3=1, D2=0)
