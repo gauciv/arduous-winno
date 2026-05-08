@@ -15,72 +15,72 @@ const long lf_integralMax = 45000;
 int lf_baseSpeed = 255; 
 int lf_maxSpeed = 255;  
 
+// Flag to ensure it only jumps once per start
+bool lf_needsKickoff = true; 
+
 // ==========================================
 // LINE FOLLOWER ROUTINES
 // ==========================================
 void loopLineFollower() {
   switch (currentState) {
-    case STANDBY_UNCALIBRATED: break;
+    case STANDBY_UNCALIBRATED: 
+      lf_needsKickoff = true; // Reset the kickoff flag
+      break;
+      
     case CALIBRATING:
+      Serial.println("[LF] Starting Calibration Routine...");
       runAutoWiggleCalibration();
       currentState = STANDBY_READY;
+      Serial.println("[LF] Calibration Finished. Ready to Play.");
       break;
+      
     case STANDBY_READY: break;
+    
     case PLAYING:
+      // THE KICKOFF JUMP: Only runs on the very first frame of PLAYING
+      if (lf_needsKickoff) {
+        Serial.println("[LF] Executing Kickoff Jump!");
+        setMotors(150, 150);
+        delay(400); 
+        lf_lastError = 0;
+        lf_integral = 0;
+        lf_needsKickoff = false; // Prevent it from jumping again
+      }
       followLinePID();
       break;
   }
 }
 
-// ---------------------------------------------------------
-// SMART DELAY FUNCTION (Checks button while waiting)
-// ---------------------------------------------------------
 bool safeDelay(unsigned long waitTime) {
   unsigned long start = millis();
   while ((millis() - start) < waitTime) {
     handleMasterButton();
-    // If the button changed the state to anything other than PLAYING, abort instantly
     if (currentState != PLAYING) {
+      Serial.println("[LF] safeDelay INTERRUPTED by Button!");
       return false; 
     }
   }
-  return true; // Finished the delay safely
+  return true; 
 }
 
-// ---------------------------------------------------------
-
 void runAutoWiggleCalibration() {
-  Serial.println("Calibrating Line Sensors (Wiggle)...");
   delay(1000); 
-  
   setMotors(-90, 90);
-  for (int i = 0; i < 40; i++) {
-    qtr.calibrate();
-    delay(5);
-  }
+  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
   
-  brakeMotors(); delay(150); 
-  setMotors(90, -90);
+  brakeMotors(); delay(150); setMotors(90, -90);
+  for (int i = 0; i < 80; i++) { qtr.calibrate(); delay(5); }
   
-  for (int i = 0; i < 80; i++) {
-    qtr.calibrate();
-    delay(5);
-  }
-  
-  brakeMotors(); delay(150); 
-  setMotors(-90, 90);
-  
-  for (int i = 0; i < 40; i++) {
-    qtr.calibrate();
-    delay(5);
-  }
+  brakeMotors(); delay(150); setMotors(-90, 90);
+  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
 
-  brakeMotors(); delay(100);
-  stopMotors();
-  Serial.println("Line Calibration Complete.");
+  brakeMotors(); delay(100); stopMotors();
 }
 
 void followLinePID() {
+  handleMasterButton();
+  if (currentState != PLAYING) return; 
+
   uint16_t position = qtr.readLineBlack(sensorValues);
   int error = position - 1500;
 
@@ -88,15 +88,16 @@ void followLinePID() {
   // 90-DEGREE SNAP OVERRIDE
   // ---------------------------------------------------------
   if (error > 1000) {
+    Serial.println("[LF] RIGHT Snap Turn");
     setMotors(200, 200); 
-    if (!safeDelay(60)) return; // Waits 60ms, aborts if button pressed
+    if (!safeDelay(60)) return; 
     
     brakeMotors(); 
-    if (!safeDelay(50)) return; // Waits 50ms, aborts if button pressed
+    if (!safeDelay(50)) return; 
 
     while (true) {
       handleMasterButton(); 
-      if (currentState != PLAYING) return; // Abort instantly if stopped
+      if (currentState != PLAYING) return; 
 
       setMotors(160, -160);
       qtr.readCalibrated(sensorValues); 
@@ -105,10 +106,11 @@ void followLinePID() {
     
     brakeMotors(); 
     if (!safeDelay(20)) return;
-    
-    lf_lastError = 0; lf_integral = 0; return; 
+    lf_lastError = 0; lf_integral = 0; 
+    return; 
   } 
   else if (error < -1000) {
+    Serial.println("[LF] LEFT Snap Turn");
     setMotors(200, 200); 
     if (!safeDelay(60)) return; 
     
@@ -126,20 +128,17 @@ void followLinePID() {
     
     brakeMotors(); 
     if (!safeDelay(20)) return;
-
-    lf_lastError = 0; lf_integral = 0; return;
+    lf_lastError = 0; lf_integral = 0; 
+    return;
   }
 
   // ---------------------------------------------------------
-  // MULTI-STAGE PROGRESSIVE BRAKING 
+  // CORE PID MATH
   // ---------------------------------------------------------
   int currentBaseSpeed = lf_baseSpeed;
   if (abs(error) > 750) currentBaseSpeed = 90;
   else if (abs(error) > 250) currentBaseSpeed = 150;
 
-  // ---------------------------------------------------------
-  // U-TURN ANTI-WINDUP
-  // ---------------------------------------------------------
   if (abs(error) < 500) {
     lf_integral += error;
     lf_integral = constrain(lf_integral, -lf_integralMax, lf_integralMax);
@@ -148,9 +147,6 @@ void followLinePID() {
     lf_integral = 0;
   }
 
-  // ---------------------------------------------------------
-  // CORE PID MATH
-  // ---------------------------------------------------------
   int P = error;
   int I = lf_integral;
   int D = error - lf_lastError;
@@ -159,11 +155,8 @@ void followLinePID() {
   int motorSpeedAdjustment = (int)((lf_Kp * P) + (lf_Ki * I) + (lf_Kd * D));
   lf_lastError = error;
 
-  int leftMotorSpeed = currentBaseSpeed + motorSpeedAdjustment + lf_leftMotorOffset;
-  int rightMotorSpeed = currentBaseSpeed - motorSpeedAdjustment + lf_rightMotorOffset;
-
-  leftMotorSpeed = constrain(leftMotorSpeed, -100, lf_maxSpeed);
-  rightMotorSpeed = constrain(rightMotorSpeed, -100, lf_maxSpeed);
+  int leftMotorSpeed = constrain(currentBaseSpeed + motorSpeedAdjustment + lf_leftMotorOffset, -100, lf_maxSpeed);
+  int rightMotorSpeed = constrain(currentBaseSpeed - motorSpeedAdjustment + lf_rightMotorOffset, -100, lf_maxSpeed);
 
   setMotors(leftMotorSpeed, rightMotorSpeed);
 }
