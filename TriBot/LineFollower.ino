@@ -4,13 +4,13 @@
 int lf_leftMotorOffset = 0;  
 int lf_rightMotorOffset = 0;
 
-int lf_baseSpeed = 160; 
+int lf_baseSpeed = 200; // Sprint speed restored
 int lf_maxSpeed = 255;  
 
-// Pure PID 
-float lf_Kp = 0.05;   
+// Restored Baseline Tuning
+float lf_Kp = 0.04;   
 float lf_Ki = 0.0;     
-float lf_Kd = 1.0;    
+float lf_Kd = 3.0;    // Aggressive shock absorber for the zig-zags
 
 int lf_lastError = 0;
 bool lf_needsKickoff = true; 
@@ -26,34 +26,29 @@ void loopLineFollower() {
   switch (currentState) {
     case STANDBY_UNCALIBRATED: 
     case STANDBY_READY:
-      // Reset the kickoff flag so it jumps every time a new race starts
       lf_needsKickoff = true; 
       break;
       
     case CALIBRATING:
       Serial.println("[LF] Starting LF Wiggle Calibration...");
       runLfCalibrationRoutine();
-      
-      // Update the independent persistence flag in TriBot.ino
       isLfCalibrated = true; 
       currentState = STANDBY_READY;
       Serial.println("[LF] Calibration Finished. Ready to Play.");
       break;
     
     case PLAYING:
-      // KICKOFF JUMP: Runs only on the first frame
       if (lf_needsKickoff) {
         Serial.println("[LF] Executing Kickoff Jump!");
+        // The old code delayed for 400ms. We use safeDelay so the Kill Switch stays active.
         setMotors(150, 150);
-        
-        // Uses the safeDelay from TriBot.ino
         if (!safeDelay(400)) return; 
         
         lf_lastError = 0;
         lf_needsKickoff = false; 
       }
       
-      // Strict 5ms Timing Loop for stable PID
+      // Strict 5ms Timing Loop
       if (millis() - lf_lastLoopTime >= lf_loopInterval) {
         lf_lastLoopTime = millis();
         followLinePID();
@@ -67,59 +62,51 @@ void loopLineFollower() {
 // ---------------------------------------------------------
 void runLfCalibrationRoutine() {
   delay(1000); 
-  setMotors(-90, 90);
-  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
+  // Slowed to 70 (like baseline) so it doesn't twist off the line
+  setMotors(-70, 70);
+  for (int i = 0; i < 30; i++) { qtr.calibrate(); delay(5); }
   
   brakeMotors(); delay(150); 
-  setMotors(90, -90);
-  for (int i = 0; i < 80; i++) { qtr.calibrate(); delay(5); }
+  setMotors(70, -70);
+  for (int i = 0; i < 60; i++) { qtr.calibrate(); delay(5); }
   
   brakeMotors(); delay(150); 
-  setMotors(-90, 90);
-  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
+  setMotors(-70, 70);
+  for (int i = 0; i < 30; i++) { qtr.calibrate(); delay(5); }
 
   brakeMotors(); delay(100); stopMotors();
 }
 
 // ---------------------------------------------------------
-// RAW, HYPER-RESPONSIVE PID LOGIC
+// PURE PID LOGIC (Baseline Math Restored)
 // ---------------------------------------------------------
 void followLinePID() {
-  // Final safety check in case state changed mid-loop
   if (currentState != PLAYING) return; 
 
+  // The QTR library naturally outputs 0 or 3000 if it loses the line.
+  // We let this feed directly into the PID math to generate a massive D-spike for tight pivots.
   uint16_t position = qtr.readLineBlack(sensorValues);
   int error = position - 1500;
 
-  // --- ARC-PIVOT EDGE RECOVERY (Fixes the 180-spin) ---
-  // If the line is lost, we don't spin in place. We keep moving forward 
-  // slightly while turning hard so we push THROUGH the U-turn.
-  if (position == 0) {
-    setMotors(-40, 160); 
-    return; 
-  } 
-  else if (position == 3000) {
-    setMotors(160, -40); 
-    return;
-  }
-
-  // --- DYNAMIC BRAKING (Fixes the Jitter) ---
-  // Thresholds widened. It will only brake on actual curves now, 
-  // allowing it to glide smoothly on the straights.
+  // --- HYPER-SENSITIVE DYNAMIC BRAKING ---
   int currentBaseSpeed = lf_baseSpeed;
-  if (abs(error) > 1000) currentBaseSpeed = 60;  
-  else if (abs(error) > 500) currentBaseSpeed = 120; 
+  if (abs(error) > 800) currentBaseSpeed = 60;  // Sharp Zig-Zag: SLAM brakes
+  else if (abs(error) > 200) currentBaseSpeed = 120; // Slight drift: Mild brake
 
-  // --- RAW PID MATH ---
+  // --- CORE PID MATH ---
   int P = error;
   int D = error - lf_lastError;
   
   int motorSpeedAdjustment = (int)((lf_Kp * P) + (lf_Kd * D));
   lf_lastError = error;
 
-  // --- PIVOT ALLOWANCE ---
-  int leftMotorSpeed = constrain(currentBaseSpeed + motorSpeedAdjustment + lf_leftMotorOffset, -100, lf_maxSpeed);
-  int rightMotorSpeed = constrain(currentBaseSpeed - motorSpeedAdjustment + lf_rightMotorOffset, -100, lf_maxSpeed);
+  int leftMotorSpeed = currentBaseSpeed + motorSpeedAdjustment + lf_leftMotorOffset;
+  int rightMotorSpeed = currentBaseSpeed - motorSpeedAdjustment + lf_rightMotorOffset;
+
+  // --- SHARP PIVOT ALLOWANCE ---
+  // Inner wheel allowed to reverse to -100 to yank the nose around the zig-zag
+  leftMotorSpeed = constrain(leftMotorSpeed, -100, lf_maxSpeed);
+  rightMotorSpeed = constrain(rightMotorSpeed, -100, lf_maxSpeed);
 
   setMotors(leftMotorSpeed, rightMotorSpeed);
 }
