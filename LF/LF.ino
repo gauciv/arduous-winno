@@ -167,11 +167,12 @@ void followLinePID() {
     // Robot is drifting slightly (entering a curve): Mild brake
     currentBaseSpeed = 120; 
   }
+  +
 
   // --- CORE PID MATH ---
   int P = error;
   int D = error - lastError;
-  int motorSpeedAdjustment = (int)((Kp * P) + (Kd * D));
+  int motorSpeedAdjustment = (int)((Kp * P) + (Ki * I) + (Kd * D););
   lastError = error;
 
   int leftMotorSpeed = currentBaseSpeed + motorSpeedAdjustment + leftMotorOffset;

@@ -10,30 +10,32 @@ void setMotors(int leftSpeed, int rightSpeed) {
   leftSpeed = constrain(leftSpeed, -255, 255);
   rightSpeed = constrain(rightSpeed, -255, 255);
 
-  // --- Left Motor ---
+  // --- Left Motor (Motor B) ---
   if (leftSpeed >= 0) {
-    digitalWrite(ain1Pin, LOW);
-    digitalWrite(ain2Pin, HIGH); 
-    analogWrite(pwmaPin, leftSpeed);
-  } else {
-    digitalWrite(ain1Pin, HIGH); 
-    digitalWrite(ain2Pin, LOW);  
-    analogWrite(pwmaPin, -leftSpeed);
-  }
-
-  // --- Right Motor ---
-  if (rightSpeed >= 0) {
     digitalWrite(bin1Pin, LOW);  
     digitalWrite(bin2Pin, HIGH); 
-    analogWrite(pwmbPin, rightSpeed);
+    analogWrite(pwmbPin, leftSpeed);
   } else {
     digitalWrite(bin1Pin, HIGH); 
     digitalWrite(bin2Pin, LOW);  
-    analogWrite(pwmbPin, -rightSpeed);
+    analogWrite(pwmbPin, -leftSpeed);
+  }
+
+  // --- Right Motor (Motor A) ---
+  if (rightSpeed >= 0) {
+    digitalWrite(ain1Pin, LOW);
+    digitalWrite(ain2Pin, HIGH); 
+    analogWrite(pwmaPin, rightSpeed);
+  } else {
+    digitalWrite(ain1Pin, HIGH); 
+    digitalWrite(ain2Pin, LOW);  
+    analogWrite(pwmaPin, -rightSpeed);
   }
 }
 
-// Active braking kills momentum instantly (crucial for Sumo and 90-degree line turns)
+// ---------------------------------------------------------
+// HARD BRAKE (Instant Stop)
+// ---------------------------------------------------------
 void brakeMotors() {
   digitalWrite(stbyPin, HIGH);
   
@@ -47,7 +49,9 @@ void brakeMotors() {
   analogWrite(pwmbPin, 255); 
 }
 
-// Stopping allows the motors to coast (useful for entering standby)
+// ---------------------------------------------------------
+// COAST TO A STOP
+// ---------------------------------------------------------
 void stopMotors() {
   // Pulling standby LOW safely cuts all outputs
   digitalWrite(stbyPin, LOW);
