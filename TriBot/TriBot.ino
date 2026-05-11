@@ -18,10 +18,17 @@ enum RobotState {
 
 RobotMode currentMode = MODE_STANDBY;
 RobotState currentState = STANDBY_UNCALIBRATED;
-bool isGloballyCalibrated = false; // Calibration Persistence Flag
+
+// --- INDEPENDENT CALIBRATION PERSISTENCE ---
+bool isLfCalibrated = false; 
+bool isSumoCalibrated = false; 
+
+// --- COMPETITION VARIABLES ---
+// Easily change this value on tournament day
+int sumoStartDelaySeconds = 5; 
 
 // ==========================================
-// GLOBAL SENSOR THRESHOLDS (Set by Calibration)
+// GLOBAL SENSOR THRESHOLDS (Set by Sub-Modules)
 // ==========================================
 int sumo_irAttackThresholdLeft = 300;  
 int sumo_irAttackThresholdRight = 300;
@@ -90,10 +97,8 @@ void setup() {
 void loop() {
   handleMasterButton();
 
-  if (currentState == CALIBRATING) {
-    runGlobalCalibration();
-  }
-
+  // Routing directly to the modules. 
+  // The modules will handle their own CALIBRATING and PLAYING logic now.
   if (currentMode == MODE_LINE_FOLLOWER) loopLineFollower();
   else if (currentMode == MODE_SUMO) loopSumo();
 }
@@ -102,16 +107,12 @@ void loop() {
 // MASTER STATE MACHINE
 // ==========================================
 RobotMode getDipSwitchMode() {
-  // Read the raw electrical state of the pins
   int rawD2 = digitalRead(dipPin2);
   int rawD3 = digitalRead(dipPin3);
 
-  // Parse based on INPUT_PULLUP (LOW = Switch ON = 1, HIGH = Switch OFF = 0)
   int d2 = (rawD2 == LOW) ? 1 : 0;
   int d3 = (rawD3 == LOW) ? 1 : 0;
 
-  // --- HARDWARE DEBUGGER ---
-  // This will tell us EXACTLY what your physical switches are doing
   Serial.print(">>> [DIP READ] d2 (Pin 2): "); Serial.print(d2);
   Serial.print(" | d3 (Pin 3): "); Serial.println(d3);
 
@@ -119,7 +120,6 @@ RobotMode getDipSwitchMode() {
   if (d2 == 0 && d3 == 1) return MODE_LINE_FOLLOWER;
   if (d2 == 1 && d3 == 0) return MODE_SUMO;
   
-  // If your hardware is shorting and outputting 11, it hits this block
   if (d2 == 1 && d3 == 1) {
     Serial.println(">>> [WARNING] Both switches read as 1. Invalid state (11) detected. Defaulting to Standby.");
     return MODE_STANDBY; 
@@ -156,13 +156,22 @@ void handleMasterButton() {
           if (currentMode == MODE_STANDBY) {
             currentState = STANDBY_UNCALIBRATED;
           } 
-          else {
-            if (!isGloballyCalibrated) {
+          else if (currentMode == MODE_LINE_FOLLOWER) {
+            if (!isLfCalibrated) {
               currentState = STANDBY_UNCALIBRATED;
-              Serial.println(">>> WAITING FOR START PRESS TO BEGIN GLOBAL CALIBRATION.");
+              Serial.println(">>> WAITING FOR START PRESS TO BEGIN LF CALIBRATION.");
             } else {
               currentState = STANDBY_READY;
-              Serial.println(">>> ALREADY CALIBRATED. WAITING FOR START PRESS TO PLAY.");
+              Serial.println(">>> LF ALREADY CALIBRATED. WAITING FOR START PRESS TO PLAY.");
+            }
+          }
+          else if (currentMode == MODE_SUMO) {
+            if (!isSumoCalibrated) {
+              currentState = STANDBY_UNCALIBRATED;
+              Serial.println(">>> WAITING FOR START PRESS TO BEGIN SUMO CALIBRATION.");
+            } else {
+              currentState = STANDBY_READY;
+              Serial.println(">>> SUMO ALREADY CALIBRATED. WAITING FOR START PRESS TO PLAY.");
             }
           }
         } 
@@ -192,44 +201,6 @@ void handleMasterButton() {
     }
   }
   lastButtonReading = reading;
-}
-
-// ==========================================
-// GLOBAL CALIBRATION ROUTINE
-// ==========================================
-void runGlobalCalibration() {
-  Serial.println(">>> CALIBRATION PHASE 1: QTR WIGGLE");
-  delay(1000); 
-  setMotors(-90, 90);
-  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
-  
-  brakeMotors(); delay(150); 
-  setMotors(90, -90);
-  for (int i = 0; i < 80; i++) { qtr.calibrate(); delay(5); }
-  
-  brakeMotors(); delay(150); 
-  setMotors(-90, 90);
-  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
-
-  brakeMotors(); delay(200); stopMotors();
-
-  Serial.println(">>> CALIBRATION PHASE 2: SUMO IR SCAN");
-  long totalLeft = 0;
-  long totalRight = 0;
-  int samples = 50;
-
-  for (int i = 0; i < samples; i++) {
-    totalLeft += analogRead(leftIrPin);
-    totalRight += analogRead(rightIrPin);
-    delay(20); 
-  }
-  sumo_irAttackThresholdLeft = (totalLeft / samples) + 40; 
-  sumo_irAttackThresholdRight = (totalRight / samples) + 40;
-
-  Serial.println(">>> GLOBAL CALIBRATION COMPLETE. FULL STOP.");
-  
-  isGloballyCalibrated = true;
-  currentState = STANDBY_READY; 
 }
 
 // ==========================================

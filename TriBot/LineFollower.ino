@@ -4,25 +4,15 @@
 int lf_leftMotorOffset = 0;  
 int lf_rightMotorOffset = 0;
 
-int lf_baseSpeed = 180; 
+int lf_baseSpeed = 160; // Dropped slightly so you can safely retune the raw math
 int lf_maxSpeed = 255;  
 
-// Pure PID 
+// Pure PID (No smoothing lag)
 float lf_Kp = 0.05;   
 float lf_Ki = 0.0;     
-float lf_Kd = 2.0;    
+float lf_Kd = 1.0;    // Lowered Kd because we removed the smoothing buffer
 
 int lf_lastError = 0;
-
-// Senior Smoothing Buffer
-const int LF_SENSOR_SAMPLES = 3;
-unsigned int lf_sensorBuffer[4][LF_SENSOR_SAMPLES]; 
-
-// Debounce Edge Counters
-int lf_leftLineLostCount = 0;
-int lf_rightLineLostCount = 0;
-const int lf_maxLostCount = 3; 
-
 bool lf_needsKickoff = true; 
 
 // Strict Timing Loop
@@ -41,7 +31,13 @@ void loopLineFollower() {
       break;
       
     case CALIBRATING:
-      // Handled globally in TriBot.ino now
+      Serial.println("[LF] Starting LF Wiggle Calibration...");
+      runLfCalibrationRoutine();
+      
+      // Update the independent persistence flag in TriBot.ino
+      isLfCalibrated = true; 
+      currentState = STANDBY_READY;
+      Serial.println("[LF] Calibration Finished. Ready to Play.");
       break;
     
     case PLAYING:
@@ -54,16 +50,6 @@ void loopLineFollower() {
         if (!safeDelay(400)) return; 
         
         lf_lastError = 0;
-        lf_leftLineLostCount = 0; 
-        lf_rightLineLostCount = 0;
-        
-        // Zero out the smoothing buffer
-        for(int i=0; i<4; i++) {
-          for(int j=0; j<LF_SENSOR_SAMPLES; j++) {
-            lf_sensorBuffer[i][j] = 0;
-          }
-        }
-        
         lf_needsKickoff = false; 
       }
       
@@ -77,54 +63,43 @@ void loopLineFollower() {
 }
 
 // ---------------------------------------------------------
-// SENIOR SENSOR SMOOTHING
+// LINE FOLLOWER WIGGLE CALIBRATION
 // ---------------------------------------------------------
-void lf_smoothSensorValues() {
-  for (int i = 0; i < 4; i++) { 
-    for (int j = LF_SENSOR_SAMPLES - 1; j > 0; j--) {
-      lf_sensorBuffer[i][j] = lf_sensorBuffer[i][j - 1];
-    }
-    lf_sensorBuffer[i][0] = sensorValues[i]; 
-    
-    int sum = 0;
-    for (int j = 0; j < LF_SENSOR_SAMPLES; j++) {
-      sum += lf_sensorBuffer[i][j];
-    }
-    sensorValues[i] = sum / LF_SENSOR_SAMPLES;
-  }
+void runLfCalibrationRoutine() {
+  delay(1000); 
+  setMotors(-90, 90);
+  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
+  
+  brakeMotors(); delay(150); 
+  setMotors(90, -90);
+  for (int i = 0; i < 80; i++) { qtr.calibrate(); delay(5); }
+  
+  brakeMotors(); delay(150); 
+  setMotors(-90, 90);
+  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
+
+  brakeMotors(); delay(100); stopMotors();
 }
 
 // ---------------------------------------------------------
-// PURE PID LOGIC
+// RAW, HYPER-RESPONSIVE PID LOGIC
 // ---------------------------------------------------------
 void followLinePID() {
   // Final safety check in case state changed mid-loop
   if (currentState != PLAYING) return; 
 
   uint16_t position = qtr.readLineBlack(sensorValues);
-  lf_smoothSensorValues(); 
-  
   int error = position - 1500;
 
-  // --- EDGE RECOVERY ---
+  // --- INSTANT ABSOLUTE EDGE RECOVERY ---
+  // No laggy debounce counters. If the line is lost, yank the motors instantly.
   if (position == 0) {
-    lf_leftLineLostCount++;
-    if (lf_leftLineLostCount >= lf_maxLostCount) {
-      setMotors(-100, 150); 
-      return; 
-    }
-  } else {
-    lf_leftLineLostCount = 0; 
-  }
-
-  if (position == 3000) {
-    lf_rightLineLostCount++;
-    if (lf_rightLineLostCount >= lf_maxLostCount) {
-      setMotors(150, -100); 
-      return;
-    }
-  } else {
-    lf_rightLineLostCount = 0; 
+    setMotors(-100, 150); 
+    return; 
+  } 
+  else if (position == 3000) {
+    setMotors(150, -100); 
+    return;
   }
 
   // --- DYNAMIC BRAKING ---
@@ -132,10 +107,9 @@ void followLinePID() {
   if (abs(error) > 800) currentBaseSpeed = 60;  
   else if (abs(error) > 200) currentBaseSpeed = 120; 
 
-  // --- CORE PID MATH ---
+  // --- RAW PID MATH ---
   int P = error;
   int D = error - lf_lastError;
-  D = constrain(D, -250, 250); // Derivative Clamping
   
   int motorSpeedAdjustment = (int)((lf_Kp * P) + (lf_Kd * D));
   lf_lastError = error;

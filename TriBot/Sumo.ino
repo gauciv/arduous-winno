@@ -6,11 +6,11 @@ const int sumo_usAttackDistanceCm = 60;
 // RC QTR Sensors: 0-2500. Lower means more reflective (White border).
 const int sumo_edgeWhiteThreshold = 300; 
 
-// Flag to ensure the 5-second countdown only happens once per match
+// Flag to ensure the countdown only happens once per match
 bool sumo_needsKickoff = true; 
 
-// Note: sumo_irAttackThresholdLeft and sumo_irAttackThresholdRight 
-// are already declared in TriBot.ino because they are set during Global Calibration.
+// Note: sumo_irAttackThresholdLeft, sumo_irAttackThresholdRight, 
+// and sumoStartDelaySeconds are declared globally in TriBot.ino.
 
 // ==========================================
 // SUMO ROUTINES
@@ -19,21 +19,29 @@ void loopSumo() {
   switch (currentState) {
     case STANDBY_UNCALIBRATED: 
     case STANDBY_READY: 
-      // Reset the 5-second timer flag anytime we go back to standby
+      // Reset the start timer flag anytime we go back to standby
       sumo_needsKickoff = true; 
       break;
       
     case CALIBRATING:
-      // Handled globally in TriBot.ino now
+      Serial.println("[SUMO] Starting Sumo Calibration...");
+      runSumoCalibrationRoutine();
+      
+      // Update the independent persistence flag in TriBot.ino
+      isSumoCalibrated = true; 
+      currentState = STANDBY_READY;
+      Serial.println("[SUMO] Calibration Finished. Ready to Play.");
       break;
       
     case PLAYING:
-      // --- THE 5-SECOND TOURNAMENT DELAY ---
+      // --- THE ADJUSTABLE TOURNAMENT DELAY ---
       if (sumo_needsKickoff) {
-        Serial.println("[SUMO] 5-Second Start Delay Initiated...");
+        Serial.print("[SUMO] ");
+        Serial.print(sumoStartDelaySeconds);
+        Serial.println("-Second Start Delay Initiated...");
         
-        // Uses the safeDelay from TriBot.ino so the kill switch works during countdown
-        if (!safeDelay(5000)) return; 
+        // Multiply by 1000UL to convert seconds to milliseconds safely
+        if (!safeDelay(sumoStartDelaySeconds * 1000UL)) return; 
         
         Serial.println("[SUMO] FIGHT!");
         sumo_needsKickoff = false;
@@ -42,6 +50,29 @@ void loopSumo() {
       executeCombatLogic();
       break;
   }
+}
+
+// ---------------------------------------------------------
+// SUMO CALIBRATION ROUTINE
+// ---------------------------------------------------------
+void runSumoCalibrationRoutine() {
+  Serial.println("[SUMO] Calibrating IR Sensors... Keep front clear.");
+  long totalLeft = 0;
+  long totalRight = 0;
+  int samples = 50;
+
+  for (int i = 0; i < samples; i++) {
+    totalLeft += analogRead(leftIrPin);
+    totalRight += analogRead(rightIrPin);
+    delay(20); 
+  }
+
+  // Tweak: +40 buffer for high sensitivity. 
+  // If your robot attacks empty space, increase this buffer.
+  sumo_irAttackThresholdLeft = (totalLeft / samples) + 40; 
+  sumo_irAttackThresholdRight = (totalRight / samples) + 40;
+  
+  Serial.println("[SUMO] IR Calibration Complete.");
 }
 
 // ---------------------------------------------------------
