@@ -40,7 +40,6 @@ void loopLineFollower() {
     case PLAYING:
       if (lf_needsKickoff) {
         Serial.println("[LF] Executing Kickoff Jump!");
-        // The jump pushes the robot OFF the starting box so the Finish Line detector doesn't trigger immediately
         setMotors(150, 150);
         if (!safeDelay(400)) return; 
         
@@ -83,24 +82,11 @@ void followLinePID() {
   if (currentState != PLAYING) return; 
 
   uint16_t position = qtr.readLineBlack(sensorValues);
-  
-  // --- 1. FINISH LINE / BOX DETECTION ---
-  // If the two OUTER sensors both see heavy black, we have hit a box.
-  // We stop the robot and return to standby to end the race.
-  if (sensorValues[0] > 700 && sensorValues[3] > 700) {
-    Serial.println("[LF] Finish Box Detected! Stopping Run.");
-    brakeMotors();
-    delay(100);
-    stopMotors();
-    currentState = STANDBY_READY;
-    return;
-  }
-
   int error = position - 1500;
 
-  // --- 2. TIGHT PIVOT EDGE RECOVERY ---
+  // --- TIGHT PIVOT EDGE RECOVERY ---
   // We use -60 to pull the nose around fast enough for the zig-zags, 
-  // without going into a full -100 death spin.
+  // without going into a full -100 death spin or a 0 overshoot.
   if (position == 0) {
     setMotors(-60, 160); 
     return; 
@@ -110,13 +96,13 @@ void followLinePID() {
     return;
   }
 
-  // --- 3. DYNAMIC BRAKING ---
+  // --- DYNAMIC BRAKING ---
   int currentBaseSpeed = lf_baseSpeed;
-  // We brake slightly earlier here (600 instead of 800) so it doesn't fly into the zig-zags too fast
+  // Brake slightly earlier (600) so it doesn't fly into the zig-zags too fast
   if (abs(error) > 600) currentBaseSpeed = 60;  
   else if (abs(error) > 200) currentBaseSpeed = 120; 
 
-  // --- 4. CORE PID MATH ---
+  // --- CORE PID MATH ---
   int P = error;
   int D = error - lf_lastError;
   
@@ -126,7 +112,7 @@ void followLinePID() {
   int leftMotorSpeed = currentBaseSpeed + motorSpeedAdjustment + lf_leftMotorOffset;
   int rightMotorSpeed = currentBaseSpeed - motorSpeedAdjustment + lf_rightMotorOffset;
 
-  // --- 5. MOTOR CONSTRAINTS ---
+  // --- MOTOR CONSTRAINTS ---
   // Allow the inner wheel to reverse slightly (-60) for tight corners during normal PID math
   leftMotorSpeed = constrain(leftMotorSpeed, -60, lf_maxSpeed);
   rightMotorSpeed = constrain(rightMotorSpeed, -60, lf_maxSpeed);
