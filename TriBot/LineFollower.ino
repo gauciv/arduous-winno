@@ -40,7 +40,7 @@ void loopLineFollower() {
     case PLAYING:
       if (lf_needsKickoff) {
         Serial.println("[LF] Executing Kickoff Jump!");
-        // The old code delayed for 400ms. We use safeDelay so the Kill Switch stays active.
+        // Uses safeDelay so the Kill Switch stays active
         setMotors(150, 150);
         if (!safeDelay(400)) return; 
         
@@ -62,7 +62,7 @@ void loopLineFollower() {
 // ---------------------------------------------------------
 void runLfCalibrationRoutine() {
   delay(1000); 
-  // Slowed to 70 (like baseline) so it doesn't twist off the line
+  // Slowed to 70 so it doesn't twist off the line
   setMotors(-70, 70);
   for (int i = 0; i < 30; i++) { qtr.calibrate(); delay(5); }
   
@@ -83,10 +83,21 @@ void runLfCalibrationRoutine() {
 void followLinePID() {
   if (currentState != PLAYING) return; 
 
-  // The QTR library naturally outputs 0 or 3000 if it loses the line.
-  // We let this feed directly into the PID math to generate a massive D-spike for tight pivots.
   uint16_t position = qtr.readLineBlack(sensorValues);
   int error = position - 1500;
+
+  // --- ARC-PIVOT EDGE RECOVERY (Fixes the 180-spin) ---
+  // If the line is lost completely, we DO NOT use negative numbers. 
+  // We stop the inner wheel (0) and drive the outer wheel forward (160) 
+  // so it arcs forward through the U-turn instead of spinning backwards.
+  if (position == 0) {
+    setMotors(0, 160); 
+    return; 
+  } 
+  else if (position == 3000) {
+    setMotors(160, 0); 
+    return;
+  }
 
   // --- HYPER-SENSITIVE DYNAMIC BRAKING ---
   int currentBaseSpeed = lf_baseSpeed;
@@ -103,10 +114,11 @@ void followLinePID() {
   int leftMotorSpeed = currentBaseSpeed + motorSpeedAdjustment + lf_leftMotorOffset;
   int rightMotorSpeed = currentBaseSpeed - motorSpeedAdjustment + lf_rightMotorOffset;
 
-  // --- SHARP PIVOT ALLOWANCE ---
-  // Inner wheel allowed to reverse to -100 to yank the nose around the zig-zag
-  leftMotorSpeed = constrain(leftMotorSpeed, -100, lf_maxSpeed);
-  rightMotorSpeed = constrain(rightMotorSpeed, -100, lf_maxSpeed);
+  // --- FORWARD MOMENTUM CONSTRAIN (Fixes the 180-spin) ---
+  // We explicitly constrain the minimum speed to 0. 
+  // The robot is physically forbidden from spinning backwards on a point.
+  leftMotorSpeed = constrain(leftMotorSpeed, 0, lf_maxSpeed);
+  rightMotorSpeed = constrain(rightMotorSpeed, 0, lf_maxSpeed);
 
   setMotors(leftMotorSpeed, rightMotorSpeed);
 }
