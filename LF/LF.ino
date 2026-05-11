@@ -22,6 +22,7 @@ const int buttonPin = 11;
 // VARIABLES & CONSTANTS
 // ==========================================
 QTRSensors qtr;
+uint16_t sensorValues[SensorCount];
 
 enum RobotState {
   STANDBY_UNCALIBRATED,
@@ -31,33 +32,33 @@ enum RobotState {
 };
 RobotState currentState = STANDBY_UNCALIBRATED;
 
-// Button Debouncing (Working Pull-up Logic)
+// Button Debouncing
 bool lastButtonReading = HIGH;
 bool buttonState = HIGH;
 unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 50;
 
-// Timing variables for strict PID loop (FIXES SHAKING)
+// Strict 5ms Timing Loop
 unsigned long lastLoopTime = 0;
-const unsigned long loopInterval = 5; // 5ms = 200Hz loop
+const unsigned long loopInterval = 5; 
 
 // ==========================================
-// TUNING VARIABLES 
+// TUNING VARIABLES (High Speed / Hard Brakes)
 // ==========================================
 int leftMotorOffset = 0;  
 int rightMotorOffset = 0; 
 
-// Slightly softened PID to work with the new Arc-Turning constraints
-float Kp = 0.08;   
-float Ki = 0.0;    // Disabled to prevent memory windup on U-turns
-float Kd = 1.5;    
+// Boosted sprint speed for straightaways
+int baseSpeed = 200; 
+int maxSpeed = 255;  
+
+// Kp lowered to prevent high-speed wobbles.
+// Kd raised to aggressively absorb the shaking.
+float Kp = 0.04;   
+float Ki = 0.0;    
+float Kd = 3.0;    
 
 int lastError = 0;
-
-int baseSpeed = 150; 
-int maxSpeed = 220;  
-
-uint16_t sensorValues[SensorCount];
 
 // ==========================================
 // SETUP
@@ -70,8 +71,6 @@ void setup() {
   pinMode(stbyPin, OUTPUT);
   
   pinMode(emitterCtrl, OUTPUT); digitalWrite(emitterCtrl, HIGH);
-
-  // Teammate's working fix for the button
   pinMode(buttonPin, INPUT_PULLUP); 
 
   qtr.setTypeRC();
@@ -79,7 +78,6 @@ void setup() {
   stopMotors();
 
   delay(1000); 
-  Serial.println("Line Follower Powered On & Ready.");
 }
 
 // ==========================================
@@ -89,16 +87,13 @@ void loop() {
   handleButtonPress();
 
   switch (currentState) {
-    case STANDBY_UNCALIBRATED: 
-      break;
+    case STANDBY_UNCALIBRATED: break;
     case CALIBRATING:
       runAutoWiggleCalibration();
       currentState = STANDBY_READY;
       break;
-    case STANDBY_READY: 
-      break;
+    case STANDBY_READY: break;
     case PLAYING:
-      // STRICT TIMING: Only run PID calculation every 5ms
       if (millis() - lastLoopTime >= loopInterval) {
         lastLoopTime = millis();
         followLinePID();
@@ -113,26 +108,19 @@ void loop() {
 void handleButtonPress() {
   bool reading = digitalRead(buttonPin);
 
-  if (reading != lastButtonReading) {
-    lastDebounceTime = millis();
-  }
+  if (reading != lastButtonReading) lastDebounceTime = millis();
 
   if ((millis() - lastDebounceTime) > debounceDelay) {
     if (reading != buttonState) {
       buttonState = reading;
 
       if (buttonState == LOW) { 
-        if (currentState == STANDBY_UNCALIBRATED) {
-          currentState = CALIBRATING;
-        } 
+        if (currentState == STANDBY_UNCALIBRATED) currentState = CALIBRATING;
         else if (currentState == STANDBY_READY) {
-          lastError = 0;
-          delay(400); 
-          currentState = PLAYING;
+          lastError = 0; delay(400); currentState = PLAYING;
         } 
         else if (currentState == PLAYING) {
-          stopMotors();
-          currentState = STANDBY_READY;
+          stopMotors(); currentState = STANDBY_READY;
         }
       }
     }
@@ -141,37 +129,46 @@ void handleButtonPress() {
 }
 
 // ==========================================
-// AUTOMATIC CALIBRATION
+// AUTOMATIC CALIBRATION (LOW DRIFT)
 // ==========================================
 void runAutoWiggleCalibration() {
   delay(1000); 
-
-  setMotors(-90, 90);
-  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
-  stopMotors(); delay(250); 
   
-  setMotors(90, -90);
-  for (int i = 0; i < 80; i++) { qtr.calibrate(); delay(5); }
-  stopMotors(); delay(250); 
+  // Dropped speed to 70 and shortened loops to prevent the robot 
+  // from twisting out of its original starting angle.
+  setMotors(-70, 70);
+  for (int i = 0; i < 30; i++) { qtr.calibrate(); delay(5); }
+  stopMotors(); delay(150); 
   
-  setMotors(-90, 90);
-  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
+  setMotors(70, -70);
+  for (int i = 0; i < 60; i++) { qtr.calibrate(); delay(5); }
+  stopMotors(); delay(150); 
+  
+  setMotors(-70, 70);
+  for (int i = 0; i < 30; i++) { qtr.calibrate(); delay(5); }
   stopMotors();
 }
 
 // ==========================================
-// PURE PID LOGIC (OPTIMIZED FOR 4 SENSORS)
+// PURE PID LOGIC
 // ==========================================
 void followLinePID() {
   uint16_t position = qtr.readLineBlack(sensorValues);
   int error = position - 1500;
 
-  // 1. Teammate's Progressive Braking
-  int currentBaseSpeed = baseSpeed; 
-  if (abs(error) > 500) currentBaseSpeed = 80; 
-  else if (abs(error) > 200) currentBaseSpeed = 120; 
+  // --- HYPER-SENSITIVE DYNAMIC BRAKING ---
+  // We need high speed on straights, but instant braking for the zig-zag.
+  int currentBaseSpeed = baseSpeed;
+  
+  if (abs(error) > 800) {
+    // Sharp Zig-Zag or U-Turn detected: SLAM the brakes
+    currentBaseSpeed = 60;  
+  } else if (abs(error) > 200) {
+    // Robot is drifting slightly (entering a curve): Mild brake
+    currentBaseSpeed = 120; 
+  }
 
-  // 2. Core PID Math
+  // --- CORE PID MATH ---
   int P = error;
   int D = error - lastError;
   int motorSpeedAdjustment = (int)((Kp * P) + (Kd * D));
@@ -180,22 +177,12 @@ void followLinePID() {
   int leftMotorSpeed = currentBaseSpeed + motorSpeedAdjustment + leftMotorOffset;
   int rightMotorSpeed = currentBaseSpeed - motorSpeedAdjustment + rightMotorOffset;
 
-  // 3. THE U-TURN FIX (ARC TURNING & EXTREME RECOVERY)
-  if (error <= -1500) {
-    // Lost line left: Lock inner wheel, surge outer wheel
-    leftMotorSpeed = 0; 
-    rightMotorSpeed = currentBaseSpeed + 50; 
-  } 
-  else if (error >= 1500) {
-    // Lost line right: Lock inner wheel, surge outer wheel
-    leftMotorSpeed = currentBaseSpeed + 50; 
-    rightMotorSpeed = 0; 
-  } 
-  else {
-    // Normal turning: Minimum is strictly 0 to force an arc instead of a spin
-    leftMotorSpeed = constrain(leftMotorSpeed, 0, maxSpeed); 
-    rightMotorSpeed = constrain(rightMotorSpeed, 0, maxSpeed);
-  }
+  // --- SHARP PIVOT ALLOWANCE ---
+  // We allow the inner wheel to reverse up to -100. 
+  // Combined with the 60 base speed above, this allows the robot to aggressively
+  // yank its nose around the zig-zag without flying off the track.
+  leftMotorSpeed = constrain(leftMotorSpeed, -100, maxSpeed); 
+  rightMotorSpeed = constrain(rightMotorSpeed, -100, maxSpeed);
 
   setMotors(leftMotorSpeed, rightMotorSpeed);
 }
