@@ -4,13 +4,13 @@
 int lf_leftMotorOffset = 0;  
 int lf_rightMotorOffset = 0;
 
-int lf_baseSpeed = 160; // Dropped slightly so you can safely retune the raw math
+int lf_baseSpeed = 160; 
 int lf_maxSpeed = 255;  
 
-// Pure PID (No smoothing lag)
+// Pure PID 
 float lf_Kp = 0.05;   
 float lf_Ki = 0.0;     
-float lf_Kd = 1.0;    // Lowered Kd because we removed the smoothing buffer
+float lf_Kd = 1.0;    
 
 int lf_lastError = 0;
 bool lf_needsKickoff = true; 
@@ -91,21 +91,24 @@ void followLinePID() {
   uint16_t position = qtr.readLineBlack(sensorValues);
   int error = position - 1500;
 
-  // --- INSTANT ABSOLUTE EDGE RECOVERY ---
-  // No laggy debounce counters. If the line is lost, yank the motors instantly.
+  // --- ARC-PIVOT EDGE RECOVERY (Fixes the 180-spin) ---
+  // If the line is lost, we don't spin in place. We keep moving forward 
+  // slightly while turning hard so we push THROUGH the U-turn.
   if (position == 0) {
-    setMotors(-100, 150); 
+    setMotors(-40, 160); 
     return; 
   } 
   else if (position == 3000) {
-    setMotors(150, -100); 
+    setMotors(160, -40); 
     return;
   }
 
-  // --- DYNAMIC BRAKING ---
+  // --- DYNAMIC BRAKING (Fixes the Jitter) ---
+  // Thresholds widened. It will only brake on actual curves now, 
+  // allowing it to glide smoothly on the straights.
   int currentBaseSpeed = lf_baseSpeed;
-  if (abs(error) > 800) currentBaseSpeed = 60;  
-  else if (abs(error) > 200) currentBaseSpeed = 120; 
+  if (abs(error) > 1000) currentBaseSpeed = 60;  
+  else if (abs(error) > 500) currentBaseSpeed = 120; 
 
   // --- RAW PID MATH ---
   int P = error;
