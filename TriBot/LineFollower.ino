@@ -84,25 +84,32 @@ void followLinePID() {
   uint16_t position = qtr.readLineBlack(sensorValues);
   int error = position - 1500;
 
-  // --- TIGHT PIVOT EDGE RECOVERY ---
-  // We use -60 to pull the nose around fast enough for the zig-zags, 
-  // without going into a full -100 death spin or a 0 overshoot.
+  // --- 1. THE "ANCHOR" PIVOT (Fixes the wide 360-spins) ---
+  // If the robot overshoots into pure white, we slow down the outer wheel (90).
+  // This prevents it from driving further into the blank space, forcing a tight head-turn.
   if (position == 0) {
-    setMotors(-60, 160); 
+    setMotors(-50, 90); 
     return; 
   } 
   else if (position == 3000) {
-    setMotors(160, -60); 
+    setMotors(90, -50); 
     return;
   }
 
-  // --- DYNAMIC BRAKING ---
+  // --- 2. 3-STAGE DYNAMIC BRAKING (Fixes the Overshoot) ---
+  // Decelerate earlier and smoother so it doesn't fly past the rocky mountains
   int currentBaseSpeed = lf_baseSpeed;
-  // Brake slightly earlier (600) so it doesn't fly into the zig-zags too fast
-  if (abs(error) > 600) currentBaseSpeed = 60;  
-  else if (abs(error) > 200) currentBaseSpeed = 120; 
+  if (abs(error) > 800) {
+    currentBaseSpeed = 50;  // The very tip of the zig-zag: Maximum brake
+  } 
+  else if (abs(error) > 400) {
+    currentBaseSpeed = 100; // Approaching the corner: Heavy brake
+  } 
+  else if (abs(error) > 150) {
+    currentBaseSpeed = 160; // Slight drift off the straightaway: Light brake
+  }
 
-  // --- CORE PID MATH ---
+  // --- 3. CORE PID MATH ---
   int P = error;
   int D = error - lf_lastError;
   
@@ -112,10 +119,10 @@ void followLinePID() {
   int leftMotorSpeed = currentBaseSpeed + motorSpeedAdjustment + lf_leftMotorOffset;
   int rightMotorSpeed = currentBaseSpeed - motorSpeedAdjustment + lf_rightMotorOffset;
 
-  // --- MOTOR CONSTRAINTS ---
-  // Allow the inner wheel to reverse slightly (-60) for tight corners during normal PID math
-  leftMotorSpeed = constrain(leftMotorSpeed, -60, lf_maxSpeed);
-  rightMotorSpeed = constrain(rightMotorSpeed, -60, lf_maxSpeed);
+  // --- 4. MOTOR CONSTRAINTS ---
+  // Allow the inner wheel to reverse slightly (-50) to assist the anchor pivot
+  leftMotorSpeed = constrain(leftMotorSpeed, -50, lf_maxSpeed);
+  rightMotorSpeed = constrain(rightMotorSpeed, -50, lf_maxSpeed);
 
   setMotors(leftMotorSpeed, rightMotorSpeed);
 }
