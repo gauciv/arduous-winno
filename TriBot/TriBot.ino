@@ -64,12 +64,8 @@ const unsigned long debounceDelay = 50;
 void setup() {
   Serial.begin(9600);
 
-  pinMode(pwmaPin, OUTPUT);
-  pinMode(ain1Pin, OUTPUT);
-  pinMode(ain2Pin, OUTPUT);
-  pinMode(pwmbPin, OUTPUT);
-  pinMode(bin1Pin, OUTPUT);
-  pinMode(bin2Pin, OUTPUT);
+  pinMode(pwmaPin, OUTPUT); pinMode(ain1Pin, OUTPUT); pinMode(ain2Pin, OUTPUT);
+  pinMode(pwmbPin, OUTPUT); pinMode(bin1Pin, OUTPUT); pinMode(bin2Pin, OUTPUT);
   pinMode(stbyPin, OUTPUT);
 
   // ALL inputs set to PULLUP
@@ -77,14 +73,11 @@ void setup() {
   pinMode(dipPin3, INPUT_PULLUP); 
   pinMode(dipPin2, INPUT_PULLUP); 
 
-  pinMode(EmitterCtrl, OUTPUT);
-  digitalWrite(EmitterCtrl, HIGH);
-  qtr.setTypeRC();
-  qtr.setSensorPins(sensorPins, SensorCount);
+  pinMode(EmitterCtrl, OUTPUT); digitalWrite(EmitterCtrl, HIGH);
+  qtr.setTypeRC(); qtr.setSensorPins(sensorPins, SensorCount);
 
   pinMode(sharedUsTrig, OUTPUT);
-  pinMode(leftUsEcho, INPUT);
-  pinMode(rightUsEcho, INPUT);
+  pinMode(leftUsEcho, INPUT); pinMode(rightUsEcho, INPUT);
 
   stopMotors();
   Serial.println("=== SYSTEM POWERED ON ===");
@@ -97,34 +90,42 @@ void setup() {
 void loop() {
   handleMasterButton();
 
-  // If triggered, run the global calibration right here in the master file
   if (currentState == CALIBRATING) {
     runGlobalCalibration();
   }
 
-  // Route to the active mode's logic (These will now only handle PLAYING logic)
-  if (currentMode == MODE_LINE_FOLLOWER) {
-    loopLineFollower();
-  } 
-  else if (currentMode == MODE_SUMO) {
-    loopSumo();
-  }
+  if (currentMode == MODE_LINE_FOLLOWER) loopLineFollower();
+  else if (currentMode == MODE_SUMO) loopSumo();
 }
 
 // ==========================================
 // MASTER STATE MACHINE
 // ==========================================
 RobotMode getDipSwitchMode() {
-  // digitalRead with INPUT_PULLUP is LOW (0) when the switch is ON.
-  // We invert it so: 1 = Switch ON, 0 = Switch OFF
-  int d2 = !digitalRead(dipPin2); 
-  int d3 = !digitalRead(dipPin3); 
+  // Read the raw electrical state of the pins
+  int rawD2 = digitalRead(dipPin2);
+  int rawD3 = digitalRead(dipPin3);
+
+  // Parse based on INPUT_PULLUP (LOW = Switch ON = 1, HIGH = Switch OFF = 0)
+  int d2 = (rawD2 == LOW) ? 1 : 0;
+  int d3 = (rawD3 == LOW) ? 1 : 0;
+
+  // --- HARDWARE DEBUGGER ---
+  // This will tell us EXACTLY what your physical switches are doing
+  Serial.print(">>> [DIP READ] d2 (Pin 2): "); Serial.print(d2);
+  Serial.print(" | d3 (Pin 3): "); Serial.println(d3);
+
+  if (d2 == 0 && d3 == 0) return MODE_STANDBY;
+  if (d2 == 0 && d3 == 1) return MODE_LINE_FOLLOWER;
+  if (d2 == 1 && d3 == 0) return MODE_SUMO;
   
-  if (d2 == 0 && d3 == 0) return MODE_STANDBY;       
-  if (d2 == 0 && d3 == 1) return MODE_LINE_FOLLOWER; 
-  if (d2 == 1 && d3 == 0) return MODE_SUMO;          
-  
-  return MODE_STANDBY; // Fallback for 11
+  // If your hardware is shorting and outputting 11, it hits this block
+  if (d2 == 1 && d3 == 1) {
+    Serial.println(">>> [WARNING] Both switches read as 1. Invalid state (11) detected. Defaulting to Standby.");
+    return MODE_STANDBY; 
+  }
+
+  return MODE_STANDBY;
 }
 
 void handleMasterButton() {
@@ -139,6 +140,7 @@ void handleMasterButton() {
       buttonState = reading;
       
       if (buttonState == LOW) { 
+        Serial.println("\n>>> BUTTON PRESSED");
         RobotMode requestedMode = getDipSwitchMode();
 
         // SCENARIO 1: SWITCHING TO A NEW MODE
@@ -155,10 +157,9 @@ void handleMasterButton() {
             currentState = STANDBY_UNCALIBRATED;
           } 
           else {
-            // Check persistence flag
             if (!isGloballyCalibrated) {
               currentState = STANDBY_UNCALIBRATED;
-              Serial.println(">>> WAITING FOR START PRESS TO BEGIN CALIBRATION.");
+              Serial.println(">>> WAITING FOR START PRESS TO BEGIN GLOBAL CALIBRATION.");
             } else {
               currentState = STANDBY_READY;
               Serial.println(">>> ALREADY CALIBRATED. WAITING FOR START PRESS TO PLAY.");
@@ -183,7 +184,7 @@ void handleMasterButton() {
             brakeMotors();
             delay(100);
             stopMotors();
-            currentState = STANDBY_READY; // Ready to start again without recalibrating
+            currentState = STANDBY_READY; 
             Serial.println(">>> STATE RETURNED TO: READY");
           }
         }
@@ -227,7 +228,6 @@ void runGlobalCalibration() {
 
   Serial.println(">>> GLOBAL CALIBRATION COMPLETE. FULL STOP.");
   
-  // Set persistence flag so we never have to do this again unless reset
   isGloballyCalibrated = true;
   currentState = STANDBY_READY; 
 }
@@ -235,7 +235,6 @@ void runGlobalCalibration() {
 // ==========================================
 // GLOBAL UTILITIES
 // ==========================================
-// safeDelay is placed here so LineFollower and Sumo can both use it
 bool safeDelay(unsigned long waitTime) {
   unsigned long start = millis();
   while ((millis() - start) < waitTime) {
