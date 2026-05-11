@@ -4,13 +4,13 @@
 int lf_leftMotorOffset = 0;  
 int lf_rightMotorOffset = 0;
 
-int lf_baseSpeed = 200; // Sprint speed restored
+int lf_baseSpeed = 200; // Sprint speed for the straights
 int lf_maxSpeed = 255;  
 
 // Restored Baseline Tuning
 float lf_Kp = 0.04;   
 float lf_Ki = 0.0;     
-float lf_Kd = 3.0;    // Aggressive shock absorber for the zig-zags
+float lf_Kd = 3.0;    // Aggressive shock absorber
 
 int lf_lastError = 0;
 bool lf_needsKickoff = true; 
@@ -40,7 +40,7 @@ void loopLineFollower() {
     case PLAYING:
       if (lf_needsKickoff) {
         Serial.println("[LF] Executing Kickoff Jump!");
-        // Uses safeDelay so the Kill Switch stays active
+        // The jump pushes the robot OFF the starting box so the Finish Line detector doesn't trigger immediately
         setMotors(150, 150);
         if (!safeDelay(400)) return; 
         
@@ -62,7 +62,6 @@ void loopLineFollower() {
 // ---------------------------------------------------------
 void runLfCalibrationRoutine() {
   delay(1000); 
-  // Slowed to 70 so it doesn't twist off the line
   setMotors(-70, 70);
   for (int i = 0; i < 30; i++) { qtr.calibrate(); delay(5); }
   
@@ -78,33 +77,46 @@ void runLfCalibrationRoutine() {
 }
 
 // ---------------------------------------------------------
-// PURE PID LOGIC (Baseline Math Restored)
+// PURE PID LOGIC & EDGE RECOVERY
 // ---------------------------------------------------------
 void followLinePID() {
   if (currentState != PLAYING) return; 
 
   uint16_t position = qtr.readLineBlack(sensorValues);
-  int error = position - 1500;
-
-  // --- ARC-PIVOT EDGE RECOVERY (Fixes the 180-spin) ---
-  // If the line is lost completely, we DO NOT use negative numbers. 
-  // We stop the inner wheel (0) and drive the outer wheel forward (160) 
-  // so it arcs forward through the U-turn instead of spinning backwards.
-  if (position == 0) {
-    setMotors(0, 160); 
-    return; 
-  } 
-  else if (position == 3000) {
-    setMotors(160, 0); 
+  
+  // --- 1. FINISH LINE / BOX DETECTION ---
+  // If the two OUTER sensors both see heavy black, we have hit a box.
+  // We stop the robot and return to standby to end the race.
+  if (sensorValues[0] > 700 && sensorValues[3] > 700) {
+    Serial.println("[LF] Finish Box Detected! Stopping Run.");
+    brakeMotors();
+    delay(100);
+    stopMotors();
+    currentState = STANDBY_READY;
     return;
   }
 
-  // --- HYPER-SENSITIVE DYNAMIC BRAKING ---
-  int currentBaseSpeed = lf_baseSpeed;
-  if (abs(error) > 800) currentBaseSpeed = 60;  // Sharp Zig-Zag: SLAM brakes
-  else if (abs(error) > 200) currentBaseSpeed = 120; // Slight drift: Mild brake
+  int error = position - 1500;
 
-  // --- CORE PID MATH ---
+  // --- 2. TIGHT PIVOT EDGE RECOVERY ---
+  // We use -60 to pull the nose around fast enough for the zig-zags, 
+  // without going into a full -100 death spin.
+  if (position == 0) {
+    setMotors(-60, 160); 
+    return; 
+  } 
+  else if (position == 3000) {
+    setMotors(160, -60); 
+    return;
+  }
+
+  // --- 3. DYNAMIC BRAKING ---
+  int currentBaseSpeed = lf_baseSpeed;
+  // We brake slightly earlier here (600 instead of 800) so it doesn't fly into the zig-zags too fast
+  if (abs(error) > 600) currentBaseSpeed = 60;  
+  else if (abs(error) > 200) currentBaseSpeed = 120; 
+
+  // --- 4. CORE PID MATH ---
   int P = error;
   int D = error - lf_lastError;
   
@@ -114,11 +126,10 @@ void followLinePID() {
   int leftMotorSpeed = currentBaseSpeed + motorSpeedAdjustment + lf_leftMotorOffset;
   int rightMotorSpeed = currentBaseSpeed - motorSpeedAdjustment + lf_rightMotorOffset;
 
-  // --- FORWARD MOMENTUM CONSTRAIN (Fixes the 180-spin) ---
-  // We explicitly constrain the minimum speed to 0. 
-  // The robot is physically forbidden from spinning backwards on a point.
-  leftMotorSpeed = constrain(leftMotorSpeed, 0, lf_maxSpeed);
-  rightMotorSpeed = constrain(rightMotorSpeed, 0, lf_maxSpeed);
+  // --- 5. MOTOR CONSTRAINTS ---
+  // Allow the inner wheel to reverse slightly (-60) for tight corners during normal PID math
+  leftMotorSpeed = constrain(leftMotorSpeed, -60, lf_maxSpeed);
+  rightMotorSpeed = constrain(rightMotorSpeed, -60, lf_maxSpeed);
 
   setMotors(leftMotorSpeed, rightMotorSpeed);
 }
