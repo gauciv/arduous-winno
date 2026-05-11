@@ -6,8 +6,7 @@
 enum RobotMode {
   MODE_STANDBY,
   MODE_LINE_FOLLOWER,
-  MODE_SUMO,
-  MODE_BALLOON
+  MODE_SUMO
 };
 
 enum RobotState {
@@ -19,6 +18,13 @@ enum RobotState {
 
 RobotMode currentMode = MODE_STANDBY;
 RobotState currentState = STANDBY_UNCALIBRATED;
+bool isGloballyCalibrated = false; // Calibration Persistence Flag
+
+// ==========================================
+// GLOBAL SENSOR THRESHOLDS (Set by Calibration)
+// ==========================================
+int sumo_irAttackThresholdLeft = 300;  
+int sumo_irAttackThresholdRight = 300;
 
 // ==========================================
 // PIN DEFINITIONS (MASTER)
@@ -91,24 +97,34 @@ void setup() {
 void loop() {
   handleMasterButton();
 
-  if (currentMode == MODE_LINE_FOLLOWER) loopLineFollower();
-  else if (currentMode == MODE_SUMO) loopSumo();
-  else if (currentMode == MODE_BALLOON) loopBalloon();
+  // If triggered, run the global calibration right here in the master file
+  if (currentState == CALIBRATING) {
+    runGlobalCalibration();
+  }
+
+  // Route to the active mode's logic (These will now only handle PLAYING logic)
+  if (currentMode == MODE_LINE_FOLLOWER) {
+    loopLineFollower();
+  } 
+  else if (currentMode == MODE_SUMO) {
+    loopSumo();
+  }
 }
 
 // ==========================================
 // MASTER STATE MACHINE
 // ==========================================
 RobotMode getDipSwitchMode() {
-  bool d3 = !digitalRead(dipPin3);
-  bool d2 = !digitalRead(dipPin2);
+  // digitalRead with INPUT_PULLUP is LOW (0) when the switch is ON.
+  // We invert it so: 1 = Switch ON, 0 = Switch OFF
+  int d2 = !digitalRead(dipPin2); 
+  int d3 = !digitalRead(dipPin3); 
   
-  if (!d3 && !d2) return MODE_STANDBY;       
-  if (d3 && !d2)  return MODE_LINE_FOLLOWER; 
-  if (!d3 && d2)  return MODE_SUMO;          
-  if (d3 && d2)   return MODE_BALLOON;       
+  if (d2 == 0 && d3 == 0) return MODE_STANDBY;       
+  if (d2 == 0 && d3 == 1) return MODE_LINE_FOLLOWER; 
+  if (d2 == 1 && d3 == 0) return MODE_SUMO;          
   
-  return MODE_STANDBY;
+  return MODE_STANDBY; // Fallback for 11
 }
 
 void handleMasterButton() {
@@ -122,22 +138,34 @@ void handleMasterButton() {
     if (reading != buttonState) {
       buttonState = reading;
       
-      // DEBUG PRINT: See exactly when the button registers
-      Serial.print(">>> BUTTON SENSOR: "); 
-      Serial.println(buttonState == LOW ? "PRESSED (LOW)" : "RELEASED (HIGH)");
-      
-      // FIX: Since it's INPUT_PULLUP, pressing the button connects it to ground (LOW)
       if (buttonState == LOW) { 
-        Serial.println(">>> BUTTON FIRED COMMAND!");
-        
         RobotMode requestedMode = getDipSwitchMode();
 
+        // SCENARIO 1: SWITCHING TO A NEW MODE
         if (requestedMode != currentMode) {
           stopMotors();
           currentMode = requestedMode;
-          currentState = STANDBY_UNCALIBRATED;
-          Serial.print(">>> MODE LOCKED: "); Serial.println(currentMode);
+          
+          Serial.print(">>> MODE SWITCHED TO: ");
+          if (currentMode == MODE_LINE_FOLLOWER) Serial.println("LINE FOLLOWER (01)");
+          else if (currentMode == MODE_SUMO) Serial.println("SUMO BOT (10)");
+          else Serial.println("STANDBY (00)");
+
+          if (currentMode == MODE_STANDBY) {
+            currentState = STANDBY_UNCALIBRATED;
+          } 
+          else {
+            // Check persistence flag
+            if (!isGloballyCalibrated) {
+              currentState = STANDBY_UNCALIBRATED;
+              Serial.println(">>> WAITING FOR START PRESS TO BEGIN CALIBRATION.");
+            } else {
+              currentState = STANDBY_READY;
+              Serial.println(">>> ALREADY CALIBRATED. WAITING FOR START PRESS TO PLAY.");
+            }
+          }
         } 
+        // SCENARIO 2: PROGRESSING THE STATE IN THE CURRENT MODE
         else {
           if (currentMode == MODE_STANDBY) {
             Serial.println(">>> IGNORING (Standby Mode 00)");
@@ -155,7 +183,7 @@ void handleMasterButton() {
             brakeMotors();
             delay(100);
             stopMotors();
-            currentState = STANDBY_READY;
+            currentState = STANDBY_READY; // Ready to start again without recalibrating
             Serial.println(">>> STATE RETURNED TO: READY");
           }
         }
@@ -163,4 +191,59 @@ void handleMasterButton() {
     }
   }
   lastButtonReading = reading;
+}
+
+// ==========================================
+// GLOBAL CALIBRATION ROUTINE
+// ==========================================
+void runGlobalCalibration() {
+  Serial.println(">>> CALIBRATION PHASE 1: QTR WIGGLE");
+  delay(1000); 
+  setMotors(-90, 90);
+  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
+  
+  brakeMotors(); delay(150); 
+  setMotors(90, -90);
+  for (int i = 0; i < 80; i++) { qtr.calibrate(); delay(5); }
+  
+  brakeMotors(); delay(150); 
+  setMotors(-90, 90);
+  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
+
+  brakeMotors(); delay(200); stopMotors();
+
+  Serial.println(">>> CALIBRATION PHASE 2: SUMO IR SCAN");
+  long totalLeft = 0;
+  long totalRight = 0;
+  int samples = 50;
+
+  for (int i = 0; i < samples; i++) {
+    totalLeft += analogRead(leftIrPin);
+    totalRight += analogRead(rightIrPin);
+    delay(20); 
+  }
+  sumo_irAttackThresholdLeft = (totalLeft / samples) + 40; 
+  sumo_irAttackThresholdRight = (totalRight / samples) + 40;
+
+  Serial.println(">>> GLOBAL CALIBRATION COMPLETE. FULL STOP.");
+  
+  // Set persistence flag so we never have to do this again unless reset
+  isGloballyCalibrated = true;
+  currentState = STANDBY_READY; 
+}
+
+// ==========================================
+// GLOBAL UTILITIES
+// ==========================================
+// safeDelay is placed here so LineFollower and Sumo can both use it
+bool safeDelay(unsigned long waitTime) {
+  unsigned long start = millis();
+  while ((millis() - start) < waitTime) {
+    handleMasterButton();
+    if (currentState != PLAYING) {
+      Serial.println(">>> safeDelay INTERRUPTED by Master Button!");
+      return false; 
+    }
+  }
+  return true; 
 }

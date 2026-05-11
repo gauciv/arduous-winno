@@ -35,18 +35,13 @@ const unsigned long lf_loopInterval = 5;
 void loopLineFollower() {
   switch (currentState) {
     case STANDBY_UNCALIBRATED: 
+    case STANDBY_READY:
+      // Reset the kickoff flag so it jumps every time a new race starts
       lf_needsKickoff = true; 
       break;
       
     case CALIBRATING:
-      Serial.println("[LF] Starting Calibration Routine...");
-      runAutoWiggleCalibration();
-      // Pass control back to the master state machine
-      currentState = STANDBY_READY;
-      Serial.println("[LF] Calibration Finished. Ready to Play.");
-      break;
-      
-    case STANDBY_READY: 
+      // Handled globally in TriBot.ino now
       break;
     
     case PLAYING:
@@ -55,6 +50,7 @@ void loopLineFollower() {
         Serial.println("[LF] Executing Kickoff Jump!");
         setMotors(150, 150);
         
+        // Uses the safeDelay from TriBot.ino
         if (!safeDelay(400)) return; 
         
         lf_lastError = 0;
@@ -78,40 +74,6 @@ void loopLineFollower() {
       }
       break;
   }
-}
-
-// ---------------------------------------------------------
-// SAFE DELAY (Keeps the Kill Switch active during delays)
-// ---------------------------------------------------------
-bool safeDelay(unsigned long waitTime) {
-  unsigned long start = millis();
-  while ((millis() - start) < waitTime) {
-    handleMasterButton(); // Check the master button
-    if (currentState != PLAYING) {
-      Serial.println("[LF] safeDelay INTERRUPTED by Master Button!");
-      return false; 
-    }
-  }
-  return true; 
-}
-
-// ---------------------------------------------------------
-// CALIBRATION WIGGLE
-// ---------------------------------------------------------
-void runAutoWiggleCalibration() {
-  delay(1000); 
-  setMotors(-90, 90);
-  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
-  
-  brakeMotors(); delay(150); 
-  setMotors(90, -90);
-  for (int i = 0; i < 80; i++) { qtr.calibrate(); delay(5); }
-  
-  brakeMotors(); delay(150); 
-  setMotors(-90, 90);
-  for (int i = 0; i < 40; i++) { qtr.calibrate(); delay(5); }
-
-  brakeMotors(); delay(100); stopMotors();
 }
 
 // ---------------------------------------------------------
