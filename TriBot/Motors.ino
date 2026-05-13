@@ -3,33 +3,31 @@
 // ==========================================
 
 void setMotors(int leftSpeed, int rightSpeed) {
-  // Wake up the motor driver
   digitalWrite(stbyPin, HIGH);
-  
-  // Safety constraint to prevent invalid PWM values
+
   leftSpeed = constrain(leftSpeed, -255, 255);
   rightSpeed = constrain(rightSpeed, -255, 255);
 
-  // --- Left Motor (Motor B) ---
+  // --- Left Motor (Motor A) ---
   if (leftSpeed >= 0) {
-    digitalWrite(bin1Pin, LOW);  
-    digitalWrite(bin2Pin, HIGH); 
-    analogWrite(pwmbPin, leftSpeed);
+    digitalWrite(ain1Pin, LOW);
+    digitalWrite(ain2Pin, HIGH);
+    analogWrite(pwmaPin, leftSpeed);
   } else {
-    digitalWrite(bin1Pin, HIGH); 
-    digitalWrite(bin2Pin, LOW);  
-    analogWrite(pwmbPin, -leftSpeed);
+    digitalWrite(ain1Pin, HIGH);
+    digitalWrite(ain2Pin, LOW);
+    analogWrite(pwmaPin, -leftSpeed);
   }
 
-  // --- Right Motor (Motor A) ---
+  // --- Right Motor (Motor B) ---
   if (rightSpeed >= 0) {
-    digitalWrite(ain1Pin, LOW);
-    digitalWrite(ain2Pin, HIGH); 
-    analogWrite(pwmaPin, rightSpeed);
+    digitalWrite(bin1Pin, LOW);
+    digitalWrite(bin2Pin, HIGH);
+    analogWrite(pwmbPin, rightSpeed);
   } else {
-    digitalWrite(ain1Pin, HIGH); 
-    digitalWrite(ain2Pin, LOW);  
-    analogWrite(pwmaPin, -rightSpeed);
+    digitalWrite(bin1Pin, HIGH);
+    digitalWrite(bin2Pin, LOW);
+    analogWrite(pwmbPin, -rightSpeed);
   }
 }
 

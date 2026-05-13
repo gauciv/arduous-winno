@@ -49,7 +49,7 @@ const int bin1Pin = 7;
 const int bin2Pin = 8;
 
 const uint8_t SensorCount = 4;
-const uint8_t sensorPins[SensorCount] = {A1, A0, A5, A4};  // Left to right
+const uint8_t sensorPins[SensorCount] = {A5, A4, A1, A0};  // Reference line follower order: left to right
 const int EmitterCtrl = 12;
 QTRSensors qtr;
 uint16_t sensorValues[SensorCount];
