@@ -25,7 +25,7 @@ bool isSumoCalibrated = false;
 
 // --- COMPETITION VARIABLES ---
 // Easily change this value on tournament day
-int sumoStartDelaySeconds = 5; 
+int sumoStartDelaySeconds = 10; 
 
 // ==========================================
 // GLOBAL SENSOR THRESHOLDS (Set by Sub-Modules)
