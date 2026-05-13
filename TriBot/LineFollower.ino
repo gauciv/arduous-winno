@@ -1,147 +1,157 @@
 // ==========================================
 // LINE FOLLOWER VARIABLES
 // ==========================================
-int lf_leftMotorOffset = 0;  
+int lf_leftMotorOffset = 0;
 int lf_rightMotorOffset = 0;
 
-// The old follower felt slow because it spent a lot of time braking to 90
-// or spinning in place. A steadier forward speed is usually faster in practice.
-int lf_straightSpeed = 200;
-int lf_mediumCurveSpeed = 175;
-int lf_tightCurveSpeed = 145;
-int lf_sharpTurnSpeed = 115;
-int lf_searchSpeed = 105;
-int lf_maxSpeed = 230;  
-
-// Four front-mounted sensors benefit more from a calm PD loop than from a
-// very aggressive PID copied from a six-sensor robot.
-float lf_Kp = 0.11;   
-float lf_Ki = 0.0;    
-float lf_Kd = 0.32;   
-float lf_filteredDerivative = 0.0;
-const float lf_derivativeFilter = 0.7;
+float lf_Kp = 0.08;
+float lf_Ki = 0.0004;
+float lf_Kd = 1.0;
 
 int lf_lastError = 0;
 int lf_lastSeenError = 0;
-long lf_integral = 0;              
-const long lf_integralMax = 8000; 
+long lf_integral = 0;
+const long lf_integralMax = 45000;
 
-bool lf_needsKickoff = true; 
-bool lf_lineWasVisible = false;
-unsigned long lf_lineLostAt = 0;
+int lf_baseSpeed = 220;
+int lf_mediumCurveSpeed = 150;
+int lf_hardBrakeSpeed = 90;
+int lf_maxSpeed = 220;
 
-// Strict Timing Loop
+bool lf_needsKickoff = true;
 unsigned long lf_lastLoopTime = 0;
 const unsigned long lf_loopInterval = 4;
+unsigned long lf_lineLostAt = 0;
 
 const int lf_centerPosition = 1500;
-const int lf_centerDeadband = 70;
-const int lf_lineVisibleThreshold = 220;
-const int lf_lineStrengthThreshold = 260;
-const int lf_integralZone = 180;
+const int lf_mediumBrakeError = 250;
+const int lf_hardBrakeError = 750;
+const int lf_sharpTurnError = 1000;
+const int lf_integralZone = 500;
+
+const uint16_t lf_lineVisibleThreshold = 220;
+const uint16_t lf_lineStrengthThreshold = 260;
+const uint16_t lf_outerSharpThreshold = 700;
+const uint16_t lf_centerReacquireThreshold = 650;
+const uint16_t lf_centerWeakThreshold = 450;
 
 void resetLfController() {
   lf_lastError = 0;
   lf_lastSeenError = 0;
   lf_integral = 0;
-  lf_filteredDerivative = 0.0;
-  lf_lineWasVisible = false;
-  lf_lineLostAt = 0;
   lf_lastLoopTime = 0;
+  lf_lineLostAt = 0;
 }
 
-bool readLfLine(int &error, uint16_t &lineStrength, uint16_t &peakValue) {
-  qtr.readCalibrated(sensorValues);
+bool readLfLine(int &error, uint16_t &peakValue, uint16_t &lineStrength) {
+  uint16_t position = qtr.readLineBlack(sensorValues);
 
-  uint32_t weightedSum = 0;
-  lineStrength = 0;
   peakValue = 0;
-
+  lineStrength = 0;
   for (uint8_t i = 0; i < SensorCount; i++) {
-    uint16_t value = sensorValues[i];
-
-    if (value > peakValue) {
-      peakValue = value;
-    }
-
-    if (value > 50) {
-      weightedSum += (uint32_t)value * (i * 1000);
-      lineStrength += value;
-    }
+    peakValue = max(peakValue, sensorValues[i]);
+    lineStrength += sensorValues[i];
   }
 
   if (peakValue < lf_lineVisibleThreshold || lineStrength < lf_lineStrengthThreshold) {
     return false;
   }
 
-  int position = weightedSum / lineStrength;
-  error = position - lf_centerPosition;
-
-  if (abs(error) < lf_centerDeadband) {
-    error = 0;
-  }
-
+  error = (int)position - lf_centerPosition;
   if (error != 0) {
     lf_lastSeenError = error;
   }
-
   return true;
 }
 
-int getLfBaseSpeed(int absError, uint16_t lineStrength, uint16_t peakValue) {
-  int baseSpeed = lf_straightSpeed;
+bool shouldSnapLfTurn(int error) {
+  bool hardRight =
+    (error > lf_sharpTurnError) ||
+    (sensorValues[3] > lf_outerSharpThreshold &&
+     sensorValues[1] < lf_centerWeakThreshold &&
+     sensorValues[2] < lf_centerWeakThreshold);
 
-  if (absError > 1050) {
-    baseSpeed = lf_sharpTurnSpeed;
-  } else if (absError > 650) {
-    baseSpeed = lf_tightCurveSpeed;
-  } else if (absError > 250) {
-    baseSpeed = lf_mediumCurveSpeed;
+  bool hardLeft =
+    (error < -lf_sharpTurnError) ||
+    (sensorValues[0] > lf_outerSharpThreshold &&
+     sensorValues[1] < lf_centerWeakThreshold &&
+     sensorValues[2] < lf_centerWeakThreshold);
+
+  return hardLeft || hardRight;
+}
+
+bool executeLfSharpTurn(bool turnRight) {
+  setMotors(200, 200);
+  if (!safeDelay(60)) return false;
+
+  unsigned long turnStart = millis();
+  while ((millis() - turnStart) < 450) {
+    handleMasterButton();
+    if (currentState != PLAYING) {
+      stopMotors();
+      return false;
+    }
+
+    if (turnRight) setMotors(220, -220);
+    else setMotors(-220, 220);
+
+    qtr.readCalibrated(sensorValues);
+    if (sensorValues[1] > lf_centerReacquireThreshold || sensorValues[2] > lf_centerReacquireThreshold) {
+      lf_lastError = 0;
+      lf_integral = 0;
+      lf_lineLostAt = 0;
+      return true;
+    }
   }
 
-  // When the line signature is weak, slow down a bit so recovery starts sooner.
-  if (peakValue < 350 || lineStrength < 550) {
-    baseSpeed = min(baseSpeed, lf_tightCurveSpeed);
-  }
+  if (turnRight) setMotors(175, -90);
+  else setMotors(-90, 175);
+  if (!safeDelay(70)) return false;
 
-  return baseSpeed;
+  lf_lastError = 0;
+  lf_integral = 0;
+  lf_lineLostAt = millis();
+  return true;
+}
+
+int getLfBaseSpeed(int absError) {
+  if (absError > lf_hardBrakeError) {
+    return lf_hardBrakeSpeed;
+  }
+  if (absError > lf_mediumBrakeError) {
+    return lf_mediumCurveSpeed;
+  }
+  return lf_baseSpeed;
 }
 
 void recoverLfLine() {
-  if (lf_lineWasVisible || lf_lineLostAt == 0) {
+  if (lf_lineLostAt == 0) {
     lf_lineLostAt = millis();
-    lf_lineWasVisible = false;
   }
 
   unsigned long lostFor = millis() - lf_lineLostAt;
   bool lastSeenRight = (lf_lastSeenError >= 0);
 
-  // Stage 1: keep moving with a slight bias to bridge tiny gaps.
   if (lostFor < 90) {
-    if (lastSeenRight) setMotors(lf_searchSpeed + 15, lf_searchSpeed - 15);
-    else setMotors(lf_searchSpeed - 15, lf_searchSpeed + 15);
+    if (lastSeenRight) setMotors(180, 140);
+    else setMotors(140, 180);
     return;
   }
 
-  // Stage 2: arc back toward the last known line side.
-  if (lostFor < 260) {
-    if (lastSeenRight) setMotors(150, 25);
-    else setMotors(25, 150);
+  if (lostFor < 240) {
+    if (lastSeenRight) setMotors(190, 40);
+    else setMotors(40, 190);
     return;
   }
 
-  // Stage 3: allow a small reverse on the inner wheel for sharper recovery,
-  // but avoid the old full-speed spin that caused 360s.
-  if (lostFor < 600) {
-    if (lastSeenRight) setMotors(150, -35);
-    else setMotors(-35, 150);
+  if (lostFor < 550) {
+    if (lastSeenRight) setMotors(205, -105);
+    else setMotors(-105, 205);
     return;
   }
 
-  // If the first guess was wrong, alternate the search direction slowly.
-  bool searchRight = ((lostFor / 220UL) % 2 == 0) ? lastSeenRight : !lastSeenRight;
-  if (searchRight) setMotors(130, -45);
-  else setMotors(-45, 130);
+  if (lastSeenRight) setMotors(180, -180);
+  else setMotors(-180, 180);
 }
 
 // ==========================================
@@ -149,30 +159,30 @@ void recoverLfLine() {
 // ==========================================
 void loopLineFollower() {
   switch (currentState) {
-    case STANDBY_UNCALIBRATED: 
+    case STANDBY_UNCALIBRATED:
     case STANDBY_READY:
-      lf_needsKickoff = true; 
+      lf_needsKickoff = true;
       resetLfController();
       break;
-      
+
     case CALIBRATING:
       Serial.println("[LF] Starting LF Wiggle Calibration...");
       runLfCalibrationRoutine();
-      isLfCalibrated = true; 
+      isLfCalibrated = true;
       currentState = STANDBY_READY;
       Serial.println("[LF] Calibration Finished. Ready to Play.");
       break;
-    
+
     case PLAYING:
       if (lf_needsKickoff) {
         Serial.println("[LF] Executing Kickoff Jump!");
-        setMotors(170, 170);
-        if (!safeDelay(250)) return; 
+        setMotors(150, 150);
+        if (!safeDelay(400)) return;
 
         resetLfController();
-        lf_needsKickoff = false; 
+        lf_needsKickoff = false;
       }
-      
+
       if (millis() - lf_lastLoopTime >= lf_loopInterval) {
         lf_lastLoopTime = millis();
         followLinePID();
@@ -186,53 +196,66 @@ void loopLineFollower() {
 // ---------------------------------------------------------
 void runLfCalibrationRoutine() {
   qtr.resetCalibration();
-  delay(600); 
+  delay(1000);
 
-  setMotors(-85, 85);
-  for (int i = 0; i < 50; i++) { qtr.calibrate(); delay(5); }
-  
-  brakeMotors(); delay(250); 
-  setMotors(85, -85);
-  for (int i = 0; i < 100; i++) { qtr.calibrate(); delay(5); }
-  
-  brakeMotors(); delay(250); 
-  setMotors(-85, 85);
-  for (int i = 0; i < 50; i++) { qtr.calibrate(); delay(5); }
+  setMotors(-90, 90);
+  for (int i = 0; i < 40; i++) {
+    qtr.calibrate();
+    delay(5);
+  }
 
-  brakeMotors(); delay(100); stopMotors();
+  stopMotors();
+  delay(250);
+
+  setMotors(90, -90);
+  for (int i = 0; i < 80; i++) {
+    qtr.calibrate();
+    delay(5);
+  }
+
+  stopMotors();
+  delay(250);
+
+  setMotors(-90, 90);
+  for (int i = 0; i < 40; i++) {
+    qtr.calibrate();
+    delay(5);
+  }
+
+  stopMotors();
 }
 
 // ---------------------------------------------------------
 // LINE FOLLOWER CONTROL
 // ---------------------------------------------------------
 void followLinePID() {
-  if (currentState != PLAYING) return; 
+  if (currentState != PLAYING) return;
 
   int error = 0;
-  uint16_t lineStrength = 0;
   uint16_t peakValue = 0;
-  bool lineVisible = readLfLine(error, lineStrength, peakValue);
+  uint16_t lineStrength = 0;
+  bool lineVisible = readLfLine(error, peakValue, lineStrength);
 
   if (!lineVisible) {
+    lf_lastError = 0;
     lf_integral = 0;
-    lf_filteredDerivative = 0.0;
     recoverLfLine();
     return;
   }
 
-  lf_lineWasVisible = true;
   lf_lineLostAt = 0;
 
-  int absError = abs(error);
-  int currentBaseSpeed = getLfBaseSpeed(absError, lineStrength, peakValue);
+  if (shouldSnapLfTurn(error)) {
+    bool turnRight = (error >= 0 || sensorValues[3] > sensorValues[0]);
+    executeLfSharpTurn(turnRight);
+    return;
+  }
 
-  // Only integrate when we are almost centered; otherwise the I-term just
-  // stores turning demand that comes back as overshoot.
-  if (absError < lf_integralZone) {
+  int currentBaseSpeed = getLfBaseSpeed(abs(error));
+
+  if (abs(error) < lf_integralZone) {
     lf_integral += error;
     lf_integral = constrain(lf_integral, -lf_integralMax, lf_integralMax);
-  } else {
-    lf_integral = 0;
   }
 
   if ((lf_lastError < 0 && error > 0) || (lf_lastError > 0 && error < 0)) {
@@ -241,23 +264,20 @@ void followLinePID() {
 
   int P = error;
   int I = lf_integral;
-  int rawDerivative = error - lf_lastError;
-  lf_filteredDerivative =
-    (lf_derivativeFilter * lf_filteredDerivative) +
-    ((1.0 - lf_derivativeFilter) * rawDerivative);
+  int D = error - lf_lastError;
 
-  int motorSpeedAdjustment =
-    (int)((lf_Kp * P) + (lf_Ki * I) + (lf_Kd * lf_filteredDerivative));
+  if (lf_lastError == 0 && D != 0) {
+    D = 0;
+  }
+
+  int motorSpeedAdjustment = (int)((lf_Kp * P) + (lf_Ki * I) + (lf_Kd * D));
   lf_lastError = error;
 
   int leftMotorSpeed = currentBaseSpeed + motorSpeedAdjustment + lf_leftMotorOffset;
   int rightMotorSpeed = currentBaseSpeed - motorSpeedAdjustment + lf_rightMotorOffset;
 
-  // Keep both wheels forward on normal corrections. Only allow a small reverse
-  // when the line is far off-center.
-  int minMotorSpeed = (absError > 1000) ? -60 : 0;
-  leftMotorSpeed = constrain(leftMotorSpeed, minMotorSpeed, lf_maxSpeed); 
-  rightMotorSpeed = constrain(rightMotorSpeed, minMotorSpeed, lf_maxSpeed);
+  leftMotorSpeed = constrain(leftMotorSpeed, -150, lf_maxSpeed);
+  rightMotorSpeed = constrain(rightMotorSpeed, -150, lf_maxSpeed);
 
   setMotors(leftMotorSpeed, rightMotorSpeed);
 }
