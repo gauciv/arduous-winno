@@ -5,7 +5,7 @@ int leftMotorOffset = 0;
 int rightMotorOffset = 0;
 
 float Kp = 0.08;
-float Ki = 0.0004;
+float Ki = 0.0001;
 float Kd = 1.0;
 
 int lastError = 0;
