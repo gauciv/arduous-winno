@@ -56,8 +56,8 @@ uint16_t sensorValues[SensorCount];
 
 const int leftIrPin = A6;      
 const int rightIrPin = A7;     
-const int leftUsEcho = A2;     
-const int rightUsEcho = A3;    
+const int leftUsEcho = A3;     
+const int rightUsEcho = A2;    
 const int sharedUsTrig = 13;   
 
 bool lastButtonReading = LOW;
